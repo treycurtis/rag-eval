@@ -188,7 +188,7 @@ rag-eval/
 
 ```bash
 # Clone and install
-git clone https://github.com/yourusername/rag-eval.git
+git clone https://github.com/treycurtis/rag-eval.git
 cd rag-eval
 uv sync
 
