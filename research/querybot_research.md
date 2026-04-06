@@ -110,6 +110,8 @@ Category: [retrieval quality / multi-source / faithfulness / calibration / scope
 What happened:
 Suspected cause: [source limitation / corpus gap / multi-hop failure / model behavior]
 Implication for eval dataset:
+Retrieval count: [how many chunks came back]
+Were the right chunks in the retrieved set at all?
 ```
 
 ---
