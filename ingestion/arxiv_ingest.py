@@ -88,10 +88,40 @@ def upload_to_s3(filepath: Path) -> None:
     logger.info("Upload complete")
 
 
+QUERIES = [
+    "cat:cs.LG AND ti:RAG",
+    "cat:cs.LG AND ti:routing",
+    "cat:cs.LG AND ti:evaluation",
+    "cat:cs.LG AND abs:inference efficiency",
+    "cat:cs.LG AND ti:retrieval augmented",
+    "cat:cs.LG AND ti:large language model efficiency",
+]
+
+
+def deduplicate(papers: list[dict]) -> list[dict]:
+    """Remove duplicate papers by arXiv ID."""
+    seen = set()
+    unique = []
+    for paper in papers:
+        if paper["id"] not in seen:
+            seen.add(paper["id"])
+            unique.append(paper)
+    logger.info(f"{len(unique)} unique papers after deduplication")
+    return unique
+
+
 def run():
-    xml = fetch_papers(max_results=100)
-    papers = parse_papers(xml)
-    filepath = save_locally(papers)
+    all_papers = []
+
+    for query in QUERIES:
+        logger.info(f"Query: {query}")
+        xml = fetch_papers(query=query, max_results=50)
+        papers = parse_papers(xml)
+        all_papers.extend(papers)
+        time.sleep(3)  # be polite to the arXiv API
+
+    all_papers = deduplicate(all_papers)
+    filepath = save_locally(all_papers)
     upload_to_s3(filepath)
 
 
