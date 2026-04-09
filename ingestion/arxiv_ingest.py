@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 ARXIV_API_URL = "http://export.arxiv.org/api/query"
 S3_BUCKET = os.getenv("S3_BUCKET_NAME")
+if not S3_BUCKET:
+    raise EnvironmentError("S3_BUCKET_NAME environment variable is not set. Add it to a .env file or export it before running.")
 LOCAL_STAGING = Path("data/raw")
 
 
