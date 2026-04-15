@@ -5,3 +5,7 @@ __pycache__/
 .python-version
 .env
 data/
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
