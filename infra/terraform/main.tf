@@ -25,7 +25,7 @@ resource "aws_s3_bucket_versioning" "raw_papers" {
   bucket = aws_s3_bucket.raw_papers.id
 
   versioning_configuration {
-    status = "Disabled"
+    status = "Enabled"
   }
 }
 
