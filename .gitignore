@@ -9,3 +9,4 @@ data/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
+awscliv2.zip
