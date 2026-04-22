@@ -3,10 +3,12 @@
 __pycache__/
 *.pyc
 .python-version
-.env
 data/
 .terraform/
 .terraform.lock.hcl
 *.tfstate
 *.tfstate.backup
-awscliv2.zip
+aws/
+*.zip
+airflow/logs/
+airflow/config/
