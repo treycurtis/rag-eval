@@ -12,3 +12,5 @@ aws/
 *.zip
 airflow/logs/
 airflow/config/
+rag_eval/target/
+rag_eval/logs/
