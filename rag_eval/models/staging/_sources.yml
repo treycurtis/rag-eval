@@ -1,0 +1,9 @@
+
+version: 2
+
+sources: 
+  - name: raw 
+    database: rag_eval
+    schema: raw
+    tables:
+      - name: arxiv_papers
