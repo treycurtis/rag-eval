@@ -1,0 +1,31 @@
+version: 2
+
+models:
+  - name: stg_arxiv_papers
+    description: "Staged arxiv papers from raw source"
+    columns:
+      - name: paper_id
+        description: "Unique identifier for the paper"
+        tests:
+          - unique
+          - not_null
+      - name: arxiv_url
+        description: "URL to the paper on arxiv"
+        tests:
+          - not_null
+      - name: title
+        description: "Title of the paper"
+        tests:
+          - not_null
+      - name: abstract
+        description: "Abstract of the paper"
+      - name: authors
+        description: "Authors of the paper"
+      - name: categories
+        description: "Arxiv categories"
+      - name: published_date
+        description: "Date the paper was published"
+        tests:
+          - not_null
+      - name: ingested_date
+        description: "Date the paper was ingested into the data warehouse"

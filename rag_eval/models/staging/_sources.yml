@@ -7,3 +7,24 @@ sources:
     schema: raw
     tables:
       - name: arxiv_papers
+        description: "Raw arxiv papers data from the source"
+        columns:
+          - name: paper_id
+            description: "Unique identifier for the paper"
+            tests:
+              - unique
+              - not_null
+          - name: arxiv_url
+            description: "URL to the paper on arxiv"
+          - name: title
+            description: "Title of the paper"
+          - name: abstract
+            description: "Abstract of the paper"
+          - name: authors
+            description: "Authors of the paper"
+          - name: categories
+            description: "Arxiv categories"
+          - name: published_date
+            description: "Date the paper was published"
+          - name: ingested_at
+            description: "Date the paper was ingested into the data warehouse"
