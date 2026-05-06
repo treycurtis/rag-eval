@@ -38,9 +38,10 @@ POSTGRES_CONN = dict(
 
 TABLE_SCHEMAS = {
     "CONVERSATIONS": [
-        "id", "user_id", "conversation_uuid", "sdk_session_id", "is_active",
-        "message_count", "total_runs", "total_cost_usd", "last_message_at",
-        "last_run_at", "learning_extraction_status", "summary", "created_at", "updated_at"
+        "id", "user_id", "conversation_uuid", "sdk_session_id", "title", "is_active",
+        "message_count", "total_runs", "total_turns", "total_cost_usd", "total_duration_ms",
+        "last_message_at", "last_run_at", "learning_extraction_status", "learning_extracted_at",
+        "summary", "created_at", "updated_at"
     ],
     "CONVERSATION_RUNS": [
         "id", "conversation_id", "user_message_id", "num_turns", "duration_ms",
@@ -85,37 +86,27 @@ def ensure_table(cs, table: str, cols: list):
         )
     """)
 
-def upsert_to_snowflake(cs, table: str, cols: list, rows: list):
-    ensure_table(cs, table, cols) 
+def insert_to_snowflake(cs, table: str, cols: list, rows: list):
+    ensure_table(cs, table, cols)
     if not rows:
         return
 
     col_names = ", ".join(c.upper() for c in cols)
-    placeholders = ", ".join(["%s"] * len(cols))
-    update_set = ", ".join(
-        f"{c.upper()} = src.{c.upper()}" for c in cols if c != "id"
-    )
-
-    merge_sql = f"""
-        MERGE INTO RAG_EVAL.QUERYBOT.{table} tgt
-        USING (
-            SELECT {col_names}
-            FROM VALUES ({placeholders}) AS v({col_names})
-        ) src
-        ON tgt.ID = src.ID
-        WHEN MATCHED THEN UPDATE SET {update_set}
-        WHEN NOT MATCHED THEN INSERT ({col_names})
-            VALUES ({', '.join(f'src.{c.upper()}' for c in cols)})
-    """
 
     chunk_size = 500
     for i in range(0, len(rows), chunk_size):
         chunk = rows[i:i + chunk_size]
-        cs.executemany(
-            merge_sql,
-            [[str(v) if v is not None else None for v in row] for row in chunk]
-        )
 
+        # One placeholder tuple per row, flattened params list
+        placeholders = ", ".join(["(" + ", ".join(["%s"] * len(cols)) + ")"] * len(chunk))
+        params = [v for row in chunk for v in row]
+
+        insert_sql = f"""
+            INSERT INTO RAG_EVAL.QUERYBOT.{table} ({col_names})
+            VALUES {placeholders}
+        """
+
+        cs.execute(insert_sql, params)
 
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
@@ -140,13 +131,17 @@ def extract_and_load_conversations(**ctx):
                 user_id,
                 conversation_uuid,
                 sdk_session_id,
+                title,
                 is_active,
                 message_count,
                 total_runs,
+                total_turns,
                 total_cost_usd,
+                total_duration_ms,
                 last_message_at,
                 last_run_at,
                 learning_extraction_status,
+                learning_extracted_at,
                 summary,
                 created_at,
                 updated_at
@@ -173,8 +168,8 @@ def extract_and_load_conversations(**ctx):
         ensure_schema(sf_cur)
 
         t1 = datetime.now(UTC)
-        upsert_to_snowflake(sf_cur, "CONVERSATIONS", cols, [list(r) for r in rows])
-        logger.info(f"Snowflake upsert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
+        insert_to_snowflake(sf_cur, "CONVERSATIONS", cols, [list(r) for r in rows])
+        logger.info(f"Snowflake insert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
 
         if new_watermark:
             set_watermark(new_watermark)
@@ -229,8 +224,8 @@ def extract_and_load_conversation_runs(**ctx):
         ensure_schema(sf_cur)
 
         t1 = datetime.now(UTC)
-        upsert_to_snowflake(sf_cur, "CONVERSATION_RUNS", cols, [list(r) for r in rows])
-        logger.info(f"Snowflake upsert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
+        insert_to_snowflake(sf_cur, "CONVERSATION_RUNS", cols, [list(r) for r in rows])
+        logger.info(f"Snowflake insert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
 
     finally:
         sf_cur.close()
@@ -284,8 +279,8 @@ def extract_and_load_conversation_messages(**ctx):
             ensure_schema(sf_cur)
 
             t1 = datetime.now(UTC)
-            upsert_to_snowflake(sf_cur, "CONVERSATION_MESSAGES", cols, all_rows)
-            logger.info(f"Snowflake upsert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
+            insert_to_snowflake(sf_cur, "CONVERSATION_MESSAGES", cols, all_rows)
+            logger.info(f"Snowflake insert complete in {(datetime.now(UTC) - t1).total_seconds():.2f}s")
 
         finally:
             sf_cur.close()
