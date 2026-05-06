@@ -1,219 +1,220 @@
 # RAG Eval Pipeline
 
-An evaluation and observability system for RAG applications that enables cost-aware model routing. The pipeline continuously scores RAG outputs using RAGAS (faithfulness, answer relevance, context relevance), tracks quality over time in Snowflake, and feeds a lightweight classifier that routes queries between a cheap tier (DeepSeek V3.2) and a strong tier (Claude Sonnet) based on predicted complexity. The routing model is config-driven and model-agnostic by design. A diagnostic dashboard surfaces cost-per-query alongside quality scores, drift alerts, and drill-down to failing samples — making the cost/quality tradeoff visible and actionable.
-
-**Mission:** Maximize the benefits of AI systems while minimizing their energy and cost footprint — not by sacrificing quality, but by measuring it well enough to know when you don't need the expensive model.
+An eval and observability platform for production AI systems. Two tracks, one mission: make AI systems that measure, explain, and improve their own output quality.
 
 ---
 
-## Architecture
+## The Problem
 
+Production AI systems are operationally observable — you can track latency, error rates, token counts, cost. What they can't tell you is whether they're actually giving good answers. A querybot can have 99.9% uptime and sub-2s response times while consistently retrieving the wrong context and generating bad SQL. Nobody knows until a user complains.
+
+This project builds the missing layer: **quality observability**. Not just "did the system respond?" but "was the response any good, and what do we do about it?"
+
+---
+
+## Two Tracks
+
+### Track 1 — arXiv RAG Eval (Portfolio)
+
+A full-stack RAG evaluation pipeline on arXiv ML papers. Demonstrates end-to-end ML infrastructure: ingestion, transformation, quality scoring, model routing, and observability.
+
+**Pipeline:**
 ```
-arXiv ML Papers
-      │
-      ▼
-   AWS S3
-(raw paper store)
-      │
-      ▼
- Airflow on ECS Fargate
-(orchestration + ingestion DAGs)
-      │
-      ▼
-   Snowflake
-(raw + staged data warehouse)
-      │
-      ▼
-     dbt
-(feature engineering + transforms)
-      │
-      ▼
-  RAG System
-(retrieval + generation layer)
-      │
-      ▼
-  RAGAS Eval
-(faithfulness / answer relevance / context relevance)
-      │
-      ▼
- MLflow on EC2 Spot
-(experiment tracking + model registry)
-      │
-      ▼
-Quality Classifier
-(predicts query complexity → routing signal)
-      │
-      ▼
-   Router
-(DeepSeek V3.2 ← simple │ complex → Claude Sonnet)
-      │
-      ▼
- FastAPI on ECS Fargate
-(serving layer)
-      │
-      ▼
-  Evidently AI
-(drift monitoring)
-      │
-      ▼
-Streamlit Dashboard
-(cost-per-query, quality scores, drift alerts, failing sample explorer)
+arXiv API → S3 → Airflow (ECS Fargate) → Snowflake → dbt
+    → RAGAS eval → MLflow → quality classifier
+    → FastAPI → Evidently AI → Streamlit dashboard
 ```
 
----
+**Goal:** Cost-aware model routing — route queries to a cheap model (DeepSeek V3.2) when quality is sufficient, escalate to a strong model (Claude Sonnet) when it isn't. Model-agnostic by design — swap via config.
 
-## Stack
+### Track 2 — Querybot Eval (Production)
 
-| Layer | Technology |
-|---|---|
-| Cloud | AWS (S3, ECS Fargate, EC2 Spot) |
-| Orchestration | Apache Airflow on ECS Fargate |
-| Data Warehouse | Snowflake |
-| Transforms | dbt |
-| Eval Framework | RAGAS |
-| Experiment Tracking | MLflow |
-| Serving | FastAPI |
-| Drift Monitoring | Evidently AI |
-| Dashboard | Streamlit Cloud |
-| Cheap Model Tier | DeepSeek V3.2 (config-swappable) |
-| Strong Model Tier | Claude Sonnet (config-swappable) |
-| IaC | Terraform |
+RAGAS eval and observability layer on top of Alarm.com's production Claude-powered BI assistant (querybot). The querybot has operational observability (OTel/Prometheus) and a learning extraction pipeline — but both are quality-blind.
 
----
-
-## Project Phases
-
-### Phase 1 — AWS Foundation + arXiv Ingestion (Weeks 1–2)
-- AWS account, IAM roles, S3 bucket structure
-- arXiv ingestion script (Python, ML papers via API)
-- Papers landing in S3 as raw JSON
-- Project repo scaffolded, Terraform introduced week 2
-
-### Phase 2 — Orchestration + Snowflake (Weeks 3–4)
-- Airflow on ECS Fargate
-- First DAG: S3 → Snowflake raw load
-- Snowflake schema design for papers + eval results
-
-### Phase 3 — RAG System + RAGAS Eval Dataset (Weeks 5–6)
-- RAG system wired up against arXiv corpus
-- RAGAS scoring pipeline (faithfulness, answer relevance, context relevance)
-- LLM-as-judge via Claude generates labeled eval dataset
-
-### Phase 4 — dbt Feature Engineering (Weeks 7–8)
-- dbt models on top of raw eval results in Snowflake
-- Feature transforms: query complexity signals, score distributions, retrieval stats
-- dbt tests + documentation
-
-### Phase 5 — MLflow + Quality Classifier (Weeks 9–10)
-- MLflow experiment tracking on EC2 Spot
-- Train lightweight classifier on RAGAS-labeled data
-- Classifier predicts query complexity → routing signal
-- Model registry: champion/challenger pattern
-
-### Phase 6 — FastAPI + Evidently Drift Monitoring (Weeks 11–12)
-- FastAPI serving layer on ECS Fargate
-- Router logic: classifier score → DeepSeek V3.2 or Claude Sonnet
-- Evidently AI drift monitoring wired into Airflow
-- Model and data drift alerts
-
-### Phase 7 — Streamlit Dashboard + Polish (Weeks 13–14)
-- Public Streamlit dashboard
-- Cost-per-query alongside quality scores
-- Score distributions with drill-down to failing samples
-- A/B comparison between prompt/model versions
-- Retrieval coverage heatmap
-- Drift alerts + sample explorer
-- README polish, architecture diagram, cost breakdown doc
-
----
-
-## Routing Design
-
-The router is intentionally model-agnostic. Model selection is driven by config, not hardcoded logic:
-
-```yaml
-# config/models.yaml
-router:
-  cheap_tier:
-    provider: deepseek
-    model: deepseek-chat
-    max_cost_per_1m_tokens: 0.28
-  strong_tier:
-    provider: anthropic
-    model: claude-sonnet-4-5
-    max_cost_per_1m_tokens: 15.00
-  threshold: 0.65  # classifier confidence below this → cheap tier
-```
-
-Swapping models requires a config change, not a code change.
-
----
-
-## Dashboard Design
-
-The dashboard is diagnostic, not decorative. Every view exists to answer a question:
-
-| View | Question it answers |
-|---|---|
-| Cost-per-query over time | Is routing saving money? |
-| Score distributions | Where is quality concentrated and where does it fall off? |
-| Failing sample explorer | What does a bad RAG answer actually look like? |
-| A/B comparison | Does prompt version B actually outperform A? |
-| Retrieval coverage heatmap | Which parts of the corpus are being used vs ignored? |
-| Drift alerts | Has something broken or degraded since last week? |
-
----
-
-## Repository Structure
+**Goal:** Add a quality signal that gates the self-improving feedback loop.
 
 ```
-rag-eval/
-├── ingestion/          # arXiv ingestion scripts
-├── airflow/            # DAG definitions
-├── dbt/                # dbt project (transforms + features)
-├── api/                # FastAPI serving layer
-├── dashboard/          # Streamlit app
-├── infra/
-│   └── terraform/      # IaC for all AWS resources
-├── notebooks/          # Exploration + eval analysis
-├── research/           # Failure mode recon, querybot notes
-├── config/             # Model routing config, env templates
-├── .env                # Never committed
-└── pyproject.toml
+User question → schema_prefetch_tool (3-layer table discovery)
+    → SQL generation → answer
+
+                    ↓ eval
+
+RAGAS scores → quality gate → learning pipeline
+    → documentation augmentation → better retrieval
+    → repeat
+```
+
+The learning extraction pipeline already exists — after every conversation, Claude Opus extracts methodology notes, business rules, and data caveats and writes them back to the documentation. The eval layer makes that loop quality-aware: only propagate learnings from conversations that scored well.
+
+---
+
+## Querybot Eval — Architecture
+
+### The Eval Unit
+
+Each eval unit maps to one `schema_prefetch` chain — one user question answered via table discovery + SQL generation:
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `question` | `conversation_messages` | User message preceding the chain |
+| `context` | `conversation_messages` | Last `schema_prefetch_tool` result before SQL write |
+| `answer` | `conversation_messages` | Tool result containing generated SQL |
+
+**81 chains** across 588 conversations. Multiple `schema_prefetch` calls can occur per user turn — use the last prefetch before SQL write as context, not the first.
+
+### RAGAS Metrics
+
+- **Faithfulness** — Does the SQL answer stay grounded in the retrieved schema context?
+- **Context Relevance** — Did `schema_prefetch` retrieve tables actually relevant to the question?
+- **Answer Relevance** — Does the SQL address what the user actually asked?
+
+### Observability Metrics (Beyond RAGAS)
+
+Per eval unit:
+
+| Metric | Source |
+|--------|--------|
+| `chain_length` | Tool call count between user message and `schema_prefetch` |
+| `prefetch_iteration_count` | How many `schema_prefetch` calls per user turn |
+| `context_size_chars` | Length of `schema_prefetch` tool result |
+| `cost_usd` | `conversation_runs.cost_usd` |
+| `duration_ms` | `conversation_runs.duration_ms` |
+| `num_turns` | `conversation_runs.num_turns` |
+
+### The Feedback Loop
+
+```
+querybot generates SQL
+    → RAGAS scores it
+    → scores land in Snowflake
+    → quality gate filters learning pipeline
+    → only high-scoring conversations generate documentation updates
+    → better table documentation → better retrieval → better SQL
+    → repeat
+
+Phase 2: querybot queries its own eval data
+    → "which query patterns scored lowest last week?"
+    → prescriptive recommendations, not just measurements
 ```
 
 ---
 
-## Local Development
+## Data Pipeline
 
-```bash
-# Clone and install
-git clone https://github.com/treycurtis/rag-eval.git
-cd rag-eval
-uv sync
+### Sources
+- **Postgres** (`172.28.42.77:5432`, db `query_bot`) — 672 conversations, ~39k messages
+- **arXiv API** — 258 papers ingested, raw JSONL in S3
 
-# Configure environment
-cp .env.example .env
-# Add API keys and Snowflake credentials
+### Airflow DAGs
 
-# Run ingestion
-uv run python ingestion/arxiv_ingest.py
+| DAG | Description | Schedule |
+|-----|-------------|----------|
+| `s3_to_snowflake` | arXiv papers → Snowflake | Manual (dev) |
+| `querybot_postgres_to_snowflake` | Querybot Postgres → Snowflake | Manual (dev) |
+
+Both DAGs use:
+- Watermark-based incremental loads via Airflow Variables
+- Late Snowflake connection (open after Postgres fetch completes)
+- Batch INSERT with chunked VALUES (one round-trip per 500-row chunk)
+
+### Snowflake
+
+| Database | Schema | Tables |
+|----------|--------|--------|
+| `RAG_EVAL` | `ARXIV` | `RAW_PAPERS` |
+| `RAG_EVAL` | `QUERYBOT` | `CONVERSATIONS`, `CONVERSATION_RUNS`, `CONVERSATION_MESSAGES` |
+
+### dbt Project (`rag_eval/`)
+
+```
+models/
+└── staging/
+    ├── stg_arxiv_papers.sql        ✅ live, 7 passing tests
+    ├── stg_conversations.sql       🔲 planned
+    ├── stg_conversation_runs.sql   🔲 planned
+    └── stg_conversation_messages.sql 🔲 planned
+
+intermediate/                       🔲 planned
+    └── int_schema_prefetch_chains.sql  — assembles eval unit per chain
+
+marts/                              🔲 planned
+    └── eval_units.sql              — final RAGAS input grain
 ```
 
 ---
 
-## Status
+## Progress Tracker
 
-| Phase | Status |
-|---|---|
-| P1: AWS Foundation + Ingestion | 🔄 In progress |
-| P2: Airflow + Snowflake | ⬜ Not started |
-| P3: RAG + RAGAS Eval | ⬜ Not started |
-| P4: dbt Features | ⬜ Not started |
-| P5: MLflow + Classifier | ⬜ Not started |
-| P6: FastAPI + Evidently | ⬜ Not started |
-| P7: Dashboard + Polish | ⬜ Not started |
+### Track 1 — arXiv Pipeline
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| P1 | AWS foundation (IAM, S3, Terraform) | ✅ Complete |
+| P2 | Airflow + Snowflake ingestion | ✅ Complete |
+| P3 | RAG system + RAGAS eval dataset | 🔲 Planned |
+| P4 | dbt feature models | 🔲 Planned |
+| P5 | MLflow + quality classifier | 🔲 Planned |
+| P6 | FastAPI + Evidently | 🔲 Planned |
+| P7 | Streamlit dashboard + polish | 🔲 Planned |
+
+### Track 2 — Querybot Eval
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| P1 | Postgres → Snowflake pipeline (Airflow DAG) | ✅ Complete |
+| P2 | dbt staging layer (typed, clean) | 🔲 In progress |
+| P3 | dbt intermediate — eval unit assembly | 🔲 Planned |
+| P4 | RAGAS scoring service | 🔲 Planned |
+| P5 | Observability dashboard | 🔲 Planned |
+| P6 | Quality gate on learning pipeline | 🔲 Planned |
+| P7 | Meta layer — querybot queries its own eval data | 🔲 Planned |
 
 ---
 
-*Target: Portfolio-ready late July / early August 2026*
+## Repo Structure
+
+```
+.
+├── airflow/
+│   ├── dags/
+│   │   ├── querybot_postgres_to_snowflake.py   # Track 2 ingestion
+│   │   └── s3_to_snowflake.py                  # Track 1 ingestion
+│   └── config/
+├── config/
+│   └── models.yaml                             # Model routing config
+├── data/raw/                                   # arXiv raw JSONL
+├── infra/terraform/                            # AWS IaC (S3, IAM, ECS)
+├── ingestion/
+│   └── arxiv_ingest.py                        # arXiv → S3
+├── rag_eval/                                   # dbt project
+│   └── models/staging/
+│       └── stg_arxiv_papers.sql
+└── research/
+    ├── querybot_research.md
+    └── struggles.md
+```
+
+---
+
+## Environment
+
+- **Dev**: WSL2 Ubuntu, VS Code, `uv` for package management
+- **Airflow**: Docker Compose at `~/airflow/`, DAGs mounted from `~/projects/rag-eval/airflow/dags/`
+- **Snowflake**: Account `ZADUWZC-QRC41354`, keypair auth at `~/.snowflake/rsa_key.pem`
+- **AWS**: IAM user `trey-dev`, S3 bucket `rag-eval-papers-raw`, Terraform state in S3
+
+---
+
+## Key Design Decisions
+
+**Why watermark over full refresh?** Querybot is a production system. Full table scans on every DAG run would stress the Postgres instance unnecessarily. Watermark on `conversations.updated_at` keeps incremental loads cheap.
+
+**Why batch INSERT over MERGE?** The watermark guarantees no duplicate loads — MERGE upsert logic is unnecessary complexity. Plain INSERT with chunked VALUES batches is simpler and faster.
+
+**Why all four message types?** Filtering to just `schema_prefetch` messages at extract time would force reingestion if the eval strategy changes. Extract everything (`user`, `tool_call`, `tool_result`, `thinking`), filter in dbt. Raw layer stays immutable.
+
+**Why Snowflake over Grafana for eval data?** Operational metrics (OTel/Prometheus) belong in Grafana. Quality metrics belong somewhere queryable — both by humans writing SQL and eventually by querybot itself querying its own performance data.
+
+---
+
+*Repo: `git@github-personal:treycurtis/rag-eval.git`*
