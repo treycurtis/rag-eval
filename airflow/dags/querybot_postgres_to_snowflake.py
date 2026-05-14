@@ -93,7 +93,7 @@ def insert_to_snowflake(cs, table: str, cols: list, rows: list):
 
     col_names = ", ".join(c.upper() for c in cols)
 
-    chunk_size = 500
+    chunk_size = 2000
     for i in range(0, len(rows), chunk_size):
         chunk = rows[i:i + chunk_size]
 

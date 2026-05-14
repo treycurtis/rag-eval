@@ -28,3 +28,100 @@ sources:
             description: "Date the paper was published"
           - name: ingested_at
             description: "Date the paper was ingested into the data warehouse"
+
+  - name: querybot
+    database: rag_eval
+    schema: querybot
+    tables:
+      - name: conversations
+        description: "Raw conversations data from  querybot"
+        columns:
+          - name: id
+            description: "Unique identifier for the conversation"
+            tests:
+              - unique
+              - not_null
+          - name: user_id
+            description: "Identifier for the user who had the conversation"
+          - name: conversation_uuid
+            description: "UUID for the conversation"
+          - name: sdk_session_id
+            description: "SDK session ID for the conversation"
+          - name: title
+            description: "Title of the conversation"
+          - name: is_active
+            description: "Whether the conversation is active or not"
+          - name: message_count
+            description: "Number of messages in the conversation"
+          - name: total_runs
+            description: "Total number of runs in the conversation"
+          - name: total_turns
+            description: "Total number of turns across all runs in the conversation"
+          - name: total_cost_usd
+            description: "Total cost of the conversation in USD"
+          - name: total_duration_ms
+            description: "Total duration of all runs in the conversation in milliseconds"
+          - name: last_message_at
+            description: "Timestamp of the last message in the conversation"
+          - name: last_run_at
+            description: "Timestamp of the last run in the conversation"
+          - name: learning_extraction_status
+            description: "Status of learning extraction for the conversation"
+          - name: learning_extracted_at
+            description: "Timestamp when learning extraction was completed for the conversation"
+          - name: summary
+            description: "Summary of the conversation"
+          - name: created_at
+            description: "Timestamp when the conversation was created"
+          - name: updated_at
+            description: "Timestamp when the conversation was last updated"
+      
+      - name: conversation_runs
+        description: "Raw conversation runs data from querybot"
+        columns:
+          - name: id
+            description: "Unique identifier for the conversation run"
+            tests:
+              - unique
+              - not_null
+          - name: conversation_id
+            description: "Identifier for the conversation this run belongs to"
+          - name: user_message_id
+            description: "Identifier for the user message that triggered the run"
+          - name: num_turns
+            description: "Number of turns in the conversation run"
+          - name: duration_ms
+            description: "Duration of the conversation run in milliseconds"
+          - name: cost_usd
+            description: "Cost of the conversation run in USD"
+          - name: sdk_session_id
+            description: "SDK session ID for the conversation run"
+          - name: started_at
+            description: "Timestamp when the conversation run started"
+          - name: completed_at
+            description: "Timestamp when the conversation run completed"
+
+      - name: conversation_messages
+        description: "Raw conversation messages data from querybot"
+        columns:
+          - name: id
+            description: "Unique identifier for the conversation message"
+            tests:
+              - unique
+              - not_null
+          - name: conversation_id
+            description: "Identifier for the conversation this message belongs to"
+          - name: message_type
+            description: "Type of the message (e.g., user, thinking, tool_call)"
+          - name: content
+            description: "Content of the message"
+          - name: message_metadata
+            description: "Metadata for the message containing a concatenated string of the tool call and tool response if the message type is a tool call, otherwise null"
+          - name: tool_use_id
+            description: "Identifier for the tool use if the message type is a tool call, otherwise null"
+          - name: is_error
+            description: "Whether the message indicates an error or not"
+          - name: created_at
+            description: "Timestamp when the conversation message was created"
+          - name: sequence_number
+            description: "Sequence number of the message within the conversation"

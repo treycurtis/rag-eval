@@ -1,7 +1,11 @@
 #!/bin/bash
 # setup_connections.sh
 # Run after docker compose up to restore Airflow connections
-# Requires env vars in ~/airflow/.env
+# Requires env vars in ~/projects/rag-eval/.env
+
+if [[ -f ~/projects/rag-eval/.env ]]; then
+  source ~/projects/rag-eval/.env
+fi
 
 : ${SNOWFLAKE_USER:?Error: SNOWFLAKE_USER is not set}
 : ${SNOWFLAKE_ACCOUNT:?Error: SNOWFLAKE_ACCOUNT is not set}

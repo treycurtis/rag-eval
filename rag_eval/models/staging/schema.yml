@@ -29,3 +29,63 @@ models:
           - not_null
       - name: ingested_date
         description: "Date the paper was ingested into the data warehouse"
+
+  - name: stg_conversations
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+      - name: conversation_uuid
+      - name: user_id
+      - name: sdk_session_id
+      - name: title
+      - name: is_active
+      - name: message_count
+      - name: total_runs
+      - name: total_turns
+      - name: total_cost_usd
+      - name: total_duration_ms
+      - name: last_message_at
+      - name: last_run_at
+      - name: learning_extraction_status
+      - name: learning_extracted_at
+      - name: summary
+      - name: created_at
+      - name: updated_at
+
+  - name: stg_conversation_runs
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+      - name: conversation_id
+        tests:
+          - not_null
+      - name: user_message_id
+      - name: num_turns
+      - name: duration_ms
+      - name: cost_usd
+      - name: sdk_session_id
+      - name: started_at
+      - name: completed_at
+
+  - name: stg_conversation_messages
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+      - name: conversation_id
+        tests:
+          - not_null
+      - name: message_type
+        description: "user, thinking, or tool_call"
+      - name: content
+      - name: message_metadata
+        description: "Concatenated tool call + response for tool_call messages, otherwise null"
+      - name: tool_use_id
+      - name: is_error
+      - name: sequence_number
+      - name: created_at
