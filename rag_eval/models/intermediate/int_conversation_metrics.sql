@@ -66,7 +66,7 @@ execute_sql_signals AS (
 code_review_signals AS (
     SELECT
         conversation_id,
-        COUNT(*)                                            AS code_review_count,
+        COUNT(*)                                           AS code_review_count,
         MAX(CASE WHEN seq_rank_asc = 1
                  THEN score END)                           AS code_review_score_first,
         MAX(CASE WHEN seq_rank_desc = 1
@@ -148,6 +148,26 @@ user_message_signals AS (
     GROUP BY conversation_id
 ),
 
+user_interrupt_signals AS (
+    SELECT
+        conversation_id,
+        COUNT(*)                                            AS user_rejected_tool_count
+    FROM {{ ref('stg_conversation_messages') }}
+    WHERE message_type = 'tool_result'
+      AND content ILIKE '%tool use was rejected%'
+    GROUP BY conversation_id
+),
+
+run_cost_signals AS (
+    SELECT
+        conversation_id,
+        SUM(cost_usd)                          AS total_cost_usd,
+        COUNT(*)                               AS run_count,
+        AVG(duration_ms)                       AS avg_run_duration_ms
+    FROM {{ ref('stg_conversation_runs') }}
+    GROUP BY conversation_id
+)
+
 SELECT
     c.id                                                   AS conversation_id,
     c.total_turns,
@@ -164,7 +184,7 @@ SELECT
     COALESCE(sw.sql_write_count, 0)                        AS sql_write_count,
     
        -- non-sql writes
-    COALESCE(sw.non_sql_write_count, 0)                   AS non_sql_write_count,
+    COALESCE(sw.non_sql_write_count, 0)                    AS non_sql_write_count,
 
     sw.first_write_sequence,
 
@@ -195,7 +215,15 @@ SELECT
     CASE
         WHEN c.created_at < '2026-03-01' THEN 'pre_prefetch'
         ELSE 'post_prefetch'
-    END                                                    AS corpus_era
+    END                                                    AS corpus_era,
+
+    -- user interrupts
+    COALESCE(ui.user_rejected_tool_count, 0)               AS user_rejected_tool_count, 
+
+    -- turn cost, duration, and run count
+    COALESCE(rc.total_cost_usd, 0)                         AS total_cost_usd,
+    COALESCE(rc.run_count, 0)                              AS run_count,
+    COALESCE(rc.avg_run_duration_ms, 0)                    AS avg_run_duration_ms
 
 FROM {{ ref('stg_conversations') }} c
 LEFT JOIN schema_prefetch_signals  sp ON c.id = sp.conversation_id
@@ -206,3 +234,5 @@ LEFT JOIN user_correction_signals  uc ON c.id = uc.conversation_id
 LEFT JOIN stale_doc_signals        sd ON c.id = sd.conversation_id
 LEFT JOIN tool_error_signals       te ON c.id = te.conversation_id
 LEFT JOIN user_message_signals     um ON c.id = um.conversation_id
+LEFT JOIN user_interrupt_signals   ui ON c.id = ui.conversation_id
+LEFT JOIN run_cost_signals         rc ON c.id = rc.conversation_id
