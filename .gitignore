@@ -17,4 +17,4 @@ rag_eval/target/
 rag_eval/logs/
 *.pem
 connect_querybot_postgres.sh
-*.duckdb
+*.duckdbclassifiers/*.json
