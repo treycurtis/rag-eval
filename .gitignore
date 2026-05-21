@@ -10,6 +10,7 @@ data/
 *.tfstate.backup
 aws/
 *.zip
+logs/
 airflow/logs/
 airflow/config/
 rag_eval/target/
