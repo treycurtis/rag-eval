@@ -6,6 +6,9 @@ import re
 import snowflake.connector
 from pathlib import Path
 from datetime import datetime, timezone
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import Counter
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -166,14 +169,14 @@ Outcome: success_clean
 
 Respond only with valid JSON. No preamble, no explanation outside the JSON.
 
-{{
+{
   "question_understanding": <1|2|3>,
   "resource_exhaustion": <1|2|3>,
   "answer_grounding": <1|2|3>,
   "actionability": <1|2|3>,
   "outcome": "<success_clean|success_with_correction|failure_knowledge_gap|failure_wrong_direction|failure_abandoned|inconclusive>",
   "reasoning": "<2-3 sentences explaining the outcome label>"
-}}
+}
 
 ---
 
@@ -182,20 +185,45 @@ Respond only with valid JSON. No preamble, no explanation outside the JSON.
 {conversation_content}
 """
 
+# Truncate long conversations while preserving key context
+def truncate_conversation(content: str, max_chars: int = 30000) -> str:
+    if len(content) <= max_chars:
+        return content
+    keep_start = 20000
+    keep_end = 10000
+    middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
+    return content[:keep_start] + middle_msg + content[-keep_end:]
+
+# Wrapper to handle rate limits with exponential backoff
+def classify_with_retry(conversation_content: str, max_retries: int = 3) -> dict:
+    for attempt in range(max_retries):
+        try:
+            return classify_conversation(conversation_content)
+        except anthropic.RateLimitError:
+            wait = 60 * (attempt + 1)
+            print(f"  Rate limited — waiting {wait}s before retry...")
+            time.sleep(wait)
+    raise Exception(f"Failed after {max_retries} retries")
+
 # ── Claude API call ───────────────────────────────────────────────────────────
 def classify_conversation(conversation_content: str) -> dict:
     client = anthropic.Anthropic()
-    prompt = PROMPT_2.format(conversation_content=conversation_content)
-
+    prompt = PROMPT_2.replace("{conversation_content}", conversation_content)
+    
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
+        model="claude-sonnet-4-6",
+        max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json|```", "", raw).strip()
-    return json.loads(raw)
+    result = json.loads(raw)
+    
+    if not result.get("outcome"):
+        raise ValueError(f"Missing outcome field in response: {raw}")
+    
+    return result
 
 # ── Write results to Snowflake ────────────────────────────────────────────────
 def write_results(conn, results: list[dict]):
@@ -255,45 +283,44 @@ def run_full_classification(backup_path: str = "consultation_outcomes.json"):
     total = len(conversation_ids)
     print(f"Found {total} consultation conversations to classify\n")
 
-    for i, conv_id in enumerate(conversation_ids, 1):
-        print(f"[{i}/{total}] Conversation {conv_id}...")
+    # fetch all content upfront, single connection, no thread safety issues
+    print("Fetching conversation content...")
+    conversations = {}
+    for conv_id in conversation_ids:
+        conversations[conv_id] = fetch_conversation(conn, conv_id)
 
-        try:
-            conversation_content = fetch_conversation(conn, conv_id)
-            char_count = len(conversation_content)
-            print(f"  {char_count:,} chars")
+    # parallelize only the Claude API calls
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(
+                classify_with_retry,
+                truncate_conversation(conversations[conv_id])
+            ): conv_id
+            for conv_id in conversation_ids
+        }
+        for future in as_completed(futures):
+            conv_id = futures[future]
+            try:
+                classification = future.result()
+                char_count = len(conversations[conv_id])
+                result = {"conversation_id": conv_id, "char_count": char_count, **classification}
+                print(f"Done: {conv_id} → {result['outcome']}")
+                results.append(result)
+            except Exception as e:
+                print(f"Error: {conv_id} → {e}")
+                results.append({
+                    "conversation_id": conv_id,
+                    "char_count": len(conversations[conv_id]),
+                    "outcome": None,
+                    "error": str(e)
+                })
 
-            classification = classify_conversation(conversation_content)
-            outcome = classification.get("outcome")
-            print(f"  → {outcome}")
-
-            result = {
-                "conversation_id": conv_id,
-                "char_count": char_count,
-                **classification
-            }
-
-        except Exception as e:
-            print(f"  ⚠️  Error: {e}")
-            result = {
-                "conversation_id": conv_id,
-                "char_count": None,
-                "outcome": None,
-                "error": str(e)
-            }
-
-        results.append(result)
-
-    # local backup regardless of Snowflake outcome
     Path(backup_path).write_text(json.dumps(results, indent=2))
     print(f"\nLocal backup written to {backup_path}")
 
-    # write to Snowflake
     write_results(conn, results)
     conn.close()
 
-    # summary
-    from collections import Counter
     outcome_counts = Counter(r.get("outcome") for r in results)
     errors = sum(1 for r in results if r.get("error"))
     print(f"\n── Results ──────────────────────────────")
