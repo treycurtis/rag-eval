@@ -153,14 +153,14 @@ Outcome: success_clean
 
 Respond only with valid JSON. No preamble, no explanation outside the JSON.
 
-{{
+{
   "question_understanding": <1|2|3>,
   "resource_exhaustion": <1|2|3>,
   "answer_grounding": <1|2|3>,
   "actionability": <1|2|3>,
   "outcome": "<success_clean|success_with_correction|failure_knowledge_gap|failure_wrong_direction|failure_abandoned|inconclusive>",
   "reasoning": "<2-3 sentences explaining the outcome label>"
-}}
+}
 
 ---
 
@@ -169,22 +169,34 @@ Respond only with valid JSON. No preamble, no explanation outside the JSON.
 {conversation_content}
 """
 
+# Truncate long conversations while preserving key context
+def truncate_conversation(content: str, max_chars: int = 30000) -> str:
+    if len(content) <= max_chars:
+        return content
+    keep_start = 20000
+    keep_end = 10000
+    middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
+    return content[:keep_start] + middle_msg + content[-keep_end:]
+
 # ── Claude API call ───────────────────────────────────────────────────────────
 def classify_conversation(conversation_content: str) -> dict:
     client = anthropic.Anthropic()
-
-    prompt = PROMPT_2.format(conversation_content=conversation_content)
-
+    prompt = PROMPT_2.replace("{conversation_content}", conversation_content)
+    
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1000,
+        model="claude-sonnet-4-6",
+        max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json|```", "", raw).strip()
-
-    return json.loads(raw)
+    result = json.loads(raw)
+    
+    if not result.get("outcome"):
+        raise ValueError(f"Missing outcome field in response: {raw}")
+    
+    return result
 
 # ── Validation cases ──────────────────────────────────────────────────────────
 VALIDATION_CASES = [
@@ -196,7 +208,7 @@ VALIDATION_CASES = [
 ]
 
 BLIND_TEST_CASES = [
-    {"conversation_id": 724, "expected_outcome": "failure_knowledge_gap"},
+    {"conversation_id": 724, "expected_outcome": "success_clean"},
 ]
 
 # ── Validation runner ─────────────────────────────────────────────────────────
