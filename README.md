@@ -1,220 +1,153 @@
-# RAG Eval Pipeline
+# Querybot Quality Pipeline
 
-An eval and observability platform for production AI systems. Two tracks, one mission: make AI systems that measure, explain, and improve their own output quality.
+Production quality signal layer for a Claude-powered enterprise BI assistant. Ingests raw conversation logs, classifies conversation outcomes using an LLM-as-judge approach, and builds a structured eval layer on top of existing operational telemetry.
 
----
+The goal is to turn the assistant from a system with operational observability (it knows what ran) into one with quality observability (it knows what worked). The north star is a self-improving feedback loop: quality scores gate the learning extraction pipeline so only high-quality conversations generate documentation updates, and eventually the assistant queries its own eval data for prescriptive self-improvement.
 
-## The Problem
-
-Production AI systems are operationally observable — you can track latency, error rates, token counts, cost. What they can't tell you is whether they're actually giving good answers. A querybot can have 99.9% uptime and sub-2s response times while consistently retrieving the wrong context and generating bad SQL. Nobody knows until a user complains.
-
-This project builds the missing layer: **quality observability**. Not just "did the system respond?" but "was the response any good, and what do we do about it?"
+**Note on naming:** The repo is called `rag-eval` because the original plan involved RAGAS metrics as the primary eval mechanism. That approach was dropped in favor of a conversation outcome classifier, which is a better fit for the assistant's multi-turn, tool-heavy conversation structure. RAGAS may be incorporated downstream as a retrieval quality signal, but it is not the core of what this pipeline does.
 
 ---
 
-## Two Tracks
-
-### Track 1 — arXiv RAG Eval (Portfolio)
-
-A full-stack RAG evaluation pipeline on arXiv ML papers. Demonstrates end-to-end ML infrastructure: ingestion, transformation, quality scoring, model routing, and observability.
-
-**Pipeline:**
-```
-arXiv API → S3 → Airflow (ECS Fargate) → Snowflake → dbt
-    → RAGAS eval → MLflow → quality classifier
-    → FastAPI → Evidently AI → Streamlit dashboard
-```
-
-**Goal:** Cost-aware model routing — route queries to a cheap model (DeepSeek V3.2) when quality is sufficient, escalate to a strong model (Claude Sonnet) when it isn't. Model-agnostic by design — swap via config.
-
-### Track 2 — Querybot Eval (Production)
-
-RAGAS eval and observability layer on top of Alarm.com's production Claude-powered BI assistant (querybot). The querybot has operational observability (OTel/Prometheus) and a learning extraction pipeline — but both are quality-blind.
-
-**Goal:** Add a quality signal that gates the self-improving feedback loop.
+## Architecture
 
 ```
-User question → schema_prefetch_tool (3-layer table discovery)
-    → SQL generation → answer
-
-                    ↓ eval
-
-RAGAS scores → quality gate → learning pipeline
-    → documentation augmentation → better retrieval
-    → repeat
+Source DB (production assistant logs)
+    └── Airflow DAG: source_to_snowflake
+            └── Snowflake: RAG_EVAL.STAGING (raw tables)
+                    └── dbt: staging models → intermediate models
+                            └── Classifiers (Python + Claude API)
+                                    └── INT_CONVERSATION_OUTCOMES_RAW
+                                            └── fct_conversation_outcomes (pending)
 ```
 
-The learning extraction pipeline already exists — after every conversation, Claude Opus extracts methodology notes, business rules, and data caveats and writes them back to the documentation. The eval layer makes that loop quality-aware: only propagate learnings from conversations that scored well.
+**Airflow:** `~/airflow/` — Docker Compose, Airflow 3.2.1, `schedule=None` (manual trigger only)  
+**dbt project:** `~/projects/rag-eval/rag_eval/`  
+**Classifiers:** `~/projects/rag-eval/classifiers/`  
 
 ---
 
-## Querybot Eval — Architecture
+## Connections
 
-### The Eval Unit
+Configured via environment variables in `.env`. See `.env.example` for required keys:
 
-Each eval unit maps to one `schema_prefetch` chain — one user question answered via table discovery + SQL generation:
+| Variable | Description |
+|---|---|
+| `SOURCE_DB_HOST` | Production Postgres host |
+| `SOURCE_DB_NAME` | Source database name |
+| `SOURCE_DB_USER` | Read-only DB user |
+| `SNOWFLAKE_ACCOUNT` | Snowflake account identifier |
+| `SNOWFLAKE_USER` | Snowflake username |
+| `SNOWFLAKE_PASSWORD` | Snowflake password |
 
-| Field | Source | Description |
-|-------|--------|-------------|
-| `question` | `conversation_messages` | User message preceding the chain |
-| `context` | `conversation_messages` | Last `schema_prefetch_tool` result before SQL write |
-| `answer` | `conversation_messages` | Tool result containing generated SQL |
-
-**81 chains** across 588 conversations. Multiple `schema_prefetch` calls can occur per user turn — use the last prefetch before SQL write as context, not the first.
-
-### RAGAS Metrics
-
-- **Faithfulness** — Does the SQL answer stay grounded in the retrieved schema context?
-- **Context Relevance** — Did `schema_prefetch` retrieve tables actually relevant to the question?
-- **Answer Relevance** — Does the SQL address what the user actually asked?
-
-### Observability Metrics (Beyond RAGAS)
-
-Per eval unit:
-
-| Metric | Source |
-|--------|--------|
-| `chain_length` | Tool call count between user message and `schema_prefetch` |
-| `prefetch_iteration_count` | How many `schema_prefetch` calls per user turn |
-| `context_size_chars` | Length of `schema_prefetch` tool result |
-| `cost_usd` | `conversation_runs.cost_usd` |
-| `duration_ms` | `conversation_runs.duration_ms` |
-| `num_turns` | `conversation_runs.num_turns` |
-
-### The Feedback Loop
-
-```
-querybot generates SQL
-    → RAGAS scores it
-    → scores land in Snowflake
-    → quality gate filters learning pipeline
-    → only high-scoring conversations generate documentation updates
-    → better table documentation → better retrieval → better SQL
-    → repeat
-
-Phase 2: querybot queries its own eval data
-    → "which query patterns scored lowest last week?"
-    → prescriptive recommendations, not just measurements
-```
+Snowflake keypair auth: `~/.snowflake/rsa_key.pem`
 
 ---
 
-## Data Pipeline
+## Data Model
 
-### Sources
-- **Postgres** (`172.28.42.77:5432`, db `query_bot`) — 672 conversations, ~39k messages
-- **arXiv API** — 258 papers ingested, raw JSONL in S3
+### Staging (dbt)
 
-### Airflow DAGs
+| Model | Description |
+|---|---|
+| `stg_conversations` | One row per conversation, metadata |
+| `stg_conversation_runs` | One row per run, cost and duration signals |
+| `stg_conversation_messages` | One row per message, full content |
+| `stg_arxiv_papers` | arXiv ingestion pipeline (separate track) |
 
-| DAG | Description | Schedule |
-|-----|-------------|----------|
-| `s3_to_snowflake` | arXiv papers → Snowflake | Manual (dev) |
-| `querybot_postgres_to_snowflake` | Querybot Postgres → Snowflake | Manual (dev) |
+### Intermediate (dbt)
 
-Both DAGs use:
-- Watermark-based incremental loads via Airflow Variables
-- Late Snowflake connection (open after Postgres fetch completes)
-- Batch INSERT with chunked VALUES (one round-trip per 500-row chunk)
+| Model | Description |
+|---|---|
+| `int_conversation_metrics` | Rolled-up signals per conversation: turns, cost, SQL writes, errors, user interrupts |
+| `int_conversation_type` | One row per conversation, type label (generation / modification / consultation / diagnostic / ghost / anomalous / unknown) |
 
-### Snowflake
+### Classifier Output
 
-| Database | Schema | Tables |
-|----------|--------|--------|
-| `RAG_EVAL` | `ARXIV` | `RAW_PAPERS` |
-| `RAG_EVAL` | `QUERYBOT` | `CONVERSATIONS`, `CONVERSATION_RUNS`, `CONVERSATION_MESSAGES` |
+| Table | Description |
+|---|---|
+| `INT_CONVERSATION_OUTCOMES_RAW` | Raw classifier output — one row per classified conversation, includes rubric scores, outcome label, reasoning, char count |
 
-### dbt Project (`rag_eval/`)
+### Pending
 
+| Model | Description |
+|---|---|
+| `fct_conversation_outcomes` | Joins metrics + type + classifier output into final quality layer |
+
+---
+
+## Conversation Corpus
+
+**735 total conversations** as of last DAG run.
+
+| Bucket | Count | Notes |
+|---|---|---|
+| ghost | 133 | `total_turns = 0`, no messages |
+| anomalous | 36 | `total_turns > 75` |
+| unknown | 137 | pre-prefetch, zero signals |
+| **classifiable** | **429** | generation + modification + consultation + diagnostic |
+
+### Classifiable breakdown
+
+| Type | Count |
+|---|---|
+| modification | 206 |
+| consultation | 143 |
+| generation | 61 |
+| diagnostic | 19 |
+
+---
+
+## Classifiers
+
+### Prompt 2 — Consultation Classifier ✅ Complete
+
+**Script:** `classifiers/run_consultation_classifier.py`  
+**Output table:** `RAG_EVAL.STAGING.INT_CONVERSATION_OUTCOMES_RAW`  
+**Conversations:** 143  
+**Status:** All 143 classified and written to Snowflake
+
+**Outcome distribution:**
+
+| Outcome | Count |
+|---|---|
+| success_clean | 103 |
+| failure_abandoned | 13 |
+| success_with_correction | 8 |
+| failure_wrong_direction | 6 |
+| inconclusive | 4 |
+| error / skipped | 1 |
+
+**Validation harness:** `classifiers/validate_consultation_classifier.py`  
+5 validation cases + 1 blind test
+
+---
+
+### Prompt 1 — SQL Output Classifier 🔲 In Progress
+
+Covers generation + modification conversations (~267 total).  
+Key label to add: `success_needs_validation` — for cases where the assistant produced SQL but environmental differences mean the output can't be fully confirmed.
+
+---
+
+## Running the Classifier
+
+```bash
+cd ~/projects/rag-eval
+source .venv/bin/activate
+
+# Full run
+python classifiers/run_consultation_classifier.py
+
+# Patch run (specific IDs)
+# Edit fetch_consultation_ids() to return a hardcoded list, then:
+python classifiers/run_consultation_classifier.py
+# Remember to restore fetch_consultation_ids() after
 ```
-models/
-└── staging/
-    ├── stg_arxiv_papers.sql        ✅ live, 7 passing tests
-    ├── stg_conversations.sql       🔲 planned
-    ├── stg_conversation_runs.sql   🔲 planned
-    └── stg_conversation_messages.sql 🔲 planned
 
-intermediate/                       🔲 planned
-    └── int_schema_prefetch_chains.sql  — assembles eval unit per chain
-
-marts/                              🔲 planned
-    └── eval_units.sql              — final RAGAS input grain
-```
+**Before running:** ensure all environment variables are set in `.env` and have your MFA token ready.
 
 ---
 
-## Progress Tracker
+## arXiv Track
 
-### Track 1 — arXiv Pipeline
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| P1 | AWS foundation (IAM, S3, Terraform) | ✅ Complete |
-| P2 | Airflow + Snowflake ingestion | ✅ Complete |
-| P3 | RAG system + RAGAS eval dataset | 🔲 Planned |
-| P4 | dbt feature models | 🔲 Planned |
-| P5 | MLflow + quality classifier | 🔲 Planned |
-| P6 | FastAPI + Evidently | 🔲 Planned |
-| P7 | Streamlit dashboard + polish | 🔲 Planned |
-
-### Track 2 — Querybot Eval
-
-| Phase | Description | Status |
-|-------|-------------|--------|
-| P1 | Postgres → Snowflake pipeline (Airflow DAG) | ✅ Complete |
-| P2 | dbt staging layer (typed, clean) | 🔲 In progress |
-| P3 | dbt intermediate — eval unit assembly | 🔲 Planned |
-| P4 | RAGAS scoring service | 🔲 Planned |
-| P5 | Observability dashboard | 🔲 Planned |
-| P6 | Quality gate on learning pipeline | 🔲 Planned |
-| P7 | Meta layer — querybot queries its own eval data | 🔲 Planned |
-
----
-
-## Repo Structure
-
-```
-.
-├── airflow/
-│   ├── dags/
-│   │   ├── querybot_postgres_to_snowflake.py   # Track 2 ingestion
-│   │   └── s3_to_snowflake.py                  # Track 1 ingestion
-│   └── config/
-├── config/
-│   └── models.yaml                             # Model routing config
-├── data/raw/                                   # arXiv raw JSONL
-├── infra/terraform/                            # AWS IaC (S3, IAM, ECS)
-├── ingestion/
-│   └── arxiv_ingest.py                        # arXiv → S3
-├── rag_eval/                                   # dbt project
-│   └── models/staging/
-│       └── stg_arxiv_papers.sql
-└── research/
-    ├── querybot_research.md
-    └── struggles.md
-```
-
----
-
-## Environment
-
-- **Dev**: WSL2 Ubuntu, VS Code, `uv` for package management
-- **Airflow**: Docker Compose at `~/airflow/`, DAGs mounted from `~/projects/rag-eval/airflow/dags/`
-- **Snowflake**: Account `ZADUWZC-QRC41354`, keypair auth at `~/.snowflake/rsa_key.pem`
-- **AWS**: IAM user `trey-dev`, S3 bucket `rag-eval-papers-raw`, Terraform state in S3
-
----
-
-## Key Design Decisions
-
-**Why watermark over full refresh?** Querybot is a production system. Full table scans on every DAG run would stress the Postgres instance unnecessarily. Watermark on `conversations.updated_at` keeps incremental loads cheap.
-
-**Why batch INSERT over MERGE?** The watermark guarantees no duplicate loads — MERGE upsert logic is unnecessary complexity. Plain INSERT with chunked VALUES batches is simpler and faster.
-
-**Why all four message types?** Filtering to just `schema_prefetch` messages at extract time would force reingestion if the eval strategy changes. Extract everything (`user`, `tool_call`, `tool_result`, `thinking`), filter in dbt. Raw layer stays immutable.
-
-**Why Snowflake over Grafana for eval data?** Operational metrics (OTel/Prometheus) belong in Grafana. Quality metrics belong somewhere queryable — both by humans writing SQL and eventually by querybot itself querying its own performance data.
-
----
-
-*Repo: `git@github-personal:treycurtis/rag-eval.git`*
+Separate pipeline. 258 papers ingested into `RAG_EVAL.ARXIV` schema via S3 (`rag-eval-papers-raw`, managed by Terraform). `stg_arxiv_papers` staging model with 7 passing tests. MLflow (EC2 Spot) and FastAPI classifier layer planned for later phases.
