@@ -9,17 +9,27 @@ from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 
 from dotenv import load_dotenv
 load_dotenv()
 
 # ── Snowflake connection ──────────────────────────────────────────────────────
 def get_snowflake_connection():
+    with open(os.path.expanduser("~/.snowflake/rsa_key.pem"), "rb") as key_file:
+        private_key = serialization.load_pem_private_key(
+            key_file.read(), password=None, backend=default_backend()
+        )
+    private_key_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
     return snowflake.connector.connect(
         account="ZADUWZC-QRC41354",
         user="BUBCHAMPAGNE",
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        passcode=input("Enter Snowflake MFA code: "),
+        private_key=private_key_bytes,
         warehouse="DEV_WH",
         database="RAG_EVAL",
         schema="STAGING"
@@ -68,7 +78,7 @@ def fetch_conversation(conn, conversation_id: int) -> str:
 
 # ── Prompt 2 ──────────────────────────────────────────────────────────────────
 PROMPT_2 = """
-You are evaluating conversations between a user and an AI assistant called querybot (also referred to as Turkle or Turkle Bot in some conversations and internal documentation). Querybot is a SQL assistant with access to a proprietary data warehouse schema, a memory system of past learnings, Confluence documentation, and Jira. It operates in a dev environment with no access to production data.
+You are evaluating conversations between a user and an AI assistant called querybot (also referred to by various names in conversation content — treat all references to the assistant as querybot regardless of what name the user uses). Querybot is a SQL assistant with access to a proprietary data warehouse schema, a memory system of past learnings, Confluence documentation, and Jira. It operates in a dev environment with no access to production data.
 
 Your job is to evaluate CONSULTATION conversations — conversations where querybot did not write a SQL file. The user's goal in these conversations is to get a correct, actionable answer to a question about the schema, data, business logic, or querybot's own capabilities. Success is not measured by whether SQL was produced — it is measured by whether the user got what they needed to move forward.
 

@@ -1,10 +1,11 @@
 
 import anthropic
-import os
 import json
+import os
 import re
 import snowflake.connector
 from pathlib import Path
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -52,7 +53,7 @@ def fetch_conversation(conn, conversation_id: int) -> str:
 
 # ── Prompt 2 ──────────────────────────────────────────────────────────────────
 PROMPT_2 = """
-You are evaluating conversations between a user and an AI assistant called querybot (also referred to as Turkle or Turkle Bot in some conversations and internal documentation). Querybot is a SQL assistant with access to a proprietary data warehouse schema, a memory system of past learnings, Confluence documentation, and Jira. It operates in a dev environment with no access to production data.
+You are evaluating conversations between a user and an AI assistant called querybot (also referred to by various names in conversation content — treat all references to the assistant as querybot regardless of what name the user uses). Querybot is a SQL assistant with access to a proprietary data warehouse schema, a memory system of past learnings, Confluence documentation, and Jira. It operates in a dev environment with no access to production data.
 
 Your job is to evaluate CONSULTATION conversations — conversations where querybot did not write a SQL file. The user's goal in these conversations is to get a correct, actionable answer to a question about the schema, data, business logic, or querybot's own capabilities. Success is not measured by whether SQL was produced — it is measured by whether the user got what they needed to move forward.
 
