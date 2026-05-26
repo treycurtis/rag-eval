@@ -1,6 +1,6 @@
-# Data Dictionary — RAG_EVAL.STAGING
+# Data Dictionary — RAG_EVAL
 
-All tables live in `RAG_EVAL.STAGING` unless otherwise noted.
+All dbt models live in `RAG_EVAL.STAGING` unless otherwise noted.
 
 ---
 
@@ -41,12 +41,13 @@ One row per message within a conversation. This is the most granular table — a
 | `message_type` | VARCHAR | Type of message. See message types below. |
 | `content` | VARCHAR | Full message content. May be NULL for some tool calls. |
 | `message_metadata` | VARIANT | JSON blob with tool call input/output metadata. |
-| `tool_use_id` | VARCHAR | Links tool_call and tool_result rows for the same tool invocation. |
+| `tool_use_id` | VARCHAR | Links `tool_call` and `tool_result` rows for the same tool invocation. |
 | `is_error` | BOOLEAN | Whether the message represents an error state. |
 | `sequence_number` | INTEGER | Ordering within the conversation. Ascending. |
 | `created_at` | TIMESTAMP_TZ | When the message was persisted. |
 
 **Message types:**
+
 | Type | Description |
 |---|---|
 | `user` | Message from the human user. |
@@ -89,9 +90,9 @@ One row per conversation. Rolled-up behavioral signals for use in classification
 | `non_sql_write_count` | INTEGER | Number of non-SQL files written (Python, markdown, etc.). |
 | `first_write_sequence` | INTEGER | Sequence number of the first file write. |
 | `prefetch_to_write_gap` | INTEGER | Sequence gap between first prefetch and first write. |
-| `execute_sql_count` | INTEGER | Number of execute_sql tool calls. Note: double-counts tool_call + tool_result rows — v2 fix backlog. |
+| `execute_sql_count` | INTEGER | Number of `execute_sql` tool calls. Note: double-counts `tool_call` + `tool_result` rows — v2 fix backlog. |
 | `execute_sql_success_count` | INTEGER | Number of successful SQL executions. |
-| `permission_error_count` | INTEGER | Number of SQL executions that returned OperationalError (DB permission failures). |
+| `permission_error_count` | INTEGER | Number of SQL executions that returned `OperationalError` (DB permission failures). |
 | `code_review_count` | INTEGER | Number of code review tool calls. |
 | `code_review_score_first` | INTEGER | Score from the first code review in the conversation. |
 | `code_review_score_last` | INTEGER | Score from the last code review in the conversation. |
@@ -101,10 +102,11 @@ One row per conversation. Rolled-up behavioral signals for use in classification
 | `tool_use_error_count` | INTEGER | Number of tool calls where `is_error = TRUE` (MCP layer failures). |
 | `codebase_error_count` | INTEGER | Number of codebase-related errors encountered. |
 | `corpus_era` | VARCHAR | `pre_prefetch` or `post_prefetch` — indicates whether schema_prefetch tooling was available when the conversation occurred. |
-| `user_rejected_tool_count` | INTEGER | Number of tool calls rejected by the user (surfaces via `%tool use was rejected%` in tool_result content where `is_error = FALSE`). |
+| `user_rejected_tool_count` | INTEGER | Number of tool calls rejected by the user (surfaces via `%tool use was rejected%` in `tool_result` content). |
 | `total_cost_usd` | FLOAT | Sum of `cost_usd` from `STG_CONVERSATION_RUNS`. |
 | `run_count` | INTEGER | Number of runs in the conversation. |
 | `avg_run_duration_ms` | FLOAT | Average run duration in milliseconds. |
+| `learning_extracted` | BOOLEAN | Whether the learning extraction pipeline has processed this conversation. Derived from `learning_extracted_at IS NOT NULL` on `STG_CONVERSATIONS`. |
 
 ---
 
@@ -114,6 +116,7 @@ One row per conversation. Assigns a conversation type label based on behavioral 
 | Column | Type | Description |
 |---|---|---|
 | `conversation_id` | INTEGER | Primary key. |
+| `corpus_era` | VARCHAR | Pass-through from `INT_CONVERSATION_METRICS`. `pre_prefetch` or `post_prefetch`. |
 | `conversation_type` | VARCHAR | Type label. See types below. |
 | `is_ghost` | BOOLEAN | `total_turns = 0` — no messages at all. |
 | `is_anomalous` | BOOLEAN | `total_turns > 75` — excluded from classifiable corpus. |
@@ -125,32 +128,38 @@ One row per conversation. Assigns a conversation type label based on behavioral 
 | `has_user_interrupt` | BOOLEAN | `user_rejected_tool_count > 0`. |
 
 **Type labels (priority order):**
+
 | Type | Count | Description |
 |---|---|---|
 | `ghost` | 133 | `total_turns = 0`, no messages. Excluded from classifiable corpus. |
 | `anomalous` | 36 | `total_turns > 75`. Excluded from classifiable corpus. |
 | `unknown` | 137 | Pre-prefetch era, insufficient signals to classify. Excluded. |
-| `generation` | 61 | Querybot wrote a new SQL file in response to a user request. |
-| `modification` | 203 | Querybot modified an existing SQL file. Includes former `complex` type (has_non_sql_write). |
-| `diagnostic` | 19 | Querybot executed SQL queries for diagnostic/validation purposes without writing files. |
-| `consultation` | 143 | Querybot answered questions without writing any files. Catch-all for schema/doc/logic lookups. |
+| `generation` | 63 | Post-prefetch, prefetch fired, SQL written. Absorbs former `complex` type (sessions with both SQL and non-SQL writes). |
+| `modification` | 236 | SQL written without schema prefetch. Includes mixed-write sessions (SQL + non-SQL). |
+| `diagnostic` | 20 | Non-SQL file written, no SQL write. Routes to consultation classifier prompt; use `has_non_sql_deliverable` on `FCT_CONVERSATION_OUTCOMES` to distinguish within results. |
+| `consultation` | 110 | No file writes. Querybot answered questions verbally. Catch-all for schema/doc/logic lookups. |
 
-**Classifiable corpus: 426 conversations** (generation + modification + diagnostic + consultation)
+**Classifiable corpus: 429 conversations** (generation + modification + diagnostic + consultation)
+
+**Type logic notes:**
+- `complex` type retired — post-prefetch sessions with both SQL and non-SQL writes fold into `generation`
+- `lookup` type retired — execute-only sessions fold into `consultation` or `modification` based on write signals
+- Priority order: `ghost` → `anomalous` → `unknown` → `generation` → `modification` → `diagnostic` → `consultation`
 
 ---
 
 ## Classifier Output
 
 ### `INT_CONVERSATION_OUTCOMES_RAW`
-One row per classified conversation. Written by the Python classifier scripts, not dbt.
+One row per classification run. Written by the Python classifier scripts, not dbt. Not unique on `conversation_id` — patch runs can create duplicates. Deduplicate on `MAX(classified_at)` before joining.
 
 | Column | Type | Description |
 |---|---|---|
-| `conversation_id` | INTEGER | Foreign key to `STG_CONVERSATIONS`. Not enforced as unique — patch runs can create duplicates; use `MAX(classified_at)` to deduplicate. |
+| `conversation_id` | INTEGER | Foreign key to `STG_CONVERSATIONS`. |
 | `conversation_type` | VARCHAR | Type label at time of classification (`consultation`, `generation`, `modification`). |
 | `outcome` | VARCHAR | Classifier outcome label. See outcome labels below — labels differ by conversation type. |
 | `question_understanding` | INTEGER | Rubric score 1-3. Did querybot correctly interpret the question? |
-| `resource_exhaustion` | INTEGER | Rubric score 1-3. Did querybot use available tools appropriately? |
+| `resource_exhaustion` | INTEGER | Rubric score 1-3. Did querybot use available tools appropriately before writing SQL? |
 | `answer_grounding` | INTEGER | Rubric score 1-3. Was the conclusion supported by evidence? |
 | `actionability` | INTEGER | Rubric score 1-3. Could the user act on the response? |
 | `flag_dev_acknowledged` | BOOLEAN | SQL output only. Whether querybot proactively noted dev environment limitations. NULL for consultation rows. |
@@ -160,6 +169,7 @@ One row per classified conversation. Written by the Python classifier scripts, n
 | `classified_at` | TIMESTAMP_TZ | When the classification was written. |
 
 **Outcome labels — consultation (`run_consultation_classifier.py`):**
+
 | Outcome | Description |
 |---|---|
 | `success_clean` | Querybot understood the question, used tools appropriately, grounded its answer in evidence, and gave the user something actionable. |
@@ -170,6 +180,7 @@ One row per classified conversation. Written by the Python classifier scripts, n
 | `inconclusive` | Too short, too ambiguous, or clearly a test/diagnostic session with no substantive exchange. |
 
 **Outcome labels — SQL output (`run_sql_output_classifier.py`):**
+
 | Outcome | Description |
 |---|---|
 | `success_clean` | Querybot understood the request, used appropriate tools, produced correct SQL, and the user got a working result. |
@@ -180,21 +191,14 @@ One row per classified conversation. Written by the Python classifier scripts, n
 | `failure_abandoned` | Conversation ended before querybot could complete the SQL — session termination, not environment blocker. |
 | `inconclusive` | Too short, too ambiguous, or a test/diagnostic session. Also used when querybot was asked to review SQL but no file was written. |
 
-**Current coverage:** 271 classified rows (143 consultation + 264 generation/modification + 3 manual `failure_abandoned` + 1 patch). Diagnostic conversations (19) pending their own prompt.
-
----
-
-## Pending Models
-
-~~### `FCT_CONVERSATION_OUTCOMES` (not yet built)~~
-~~Final quality layer. Will join `INT_CONVERSATION_METRICS` + `INT_CONVERSATION_TYPE` + `INT_CONVERSATION_OUTCOMES_RAW` into one row per classifiable conversation with full signal set.~~
+**Current coverage:** 271 classified rows (143 consultation + 264 generation/modification + 3 manual `failure_abandoned` + 1 patch). Diagnostic conversations (20) pending — route to consultation classifier prompt.
 
 ---
 
 ## Marts Models (dbt)
 
 ### `FCT_CONVERSATION_OUTCOMES`
-Final quality layer. One row per classifiable conversation (generation, modification, diagnostic, consultation). Ghost, anomalous, unknown, and complex conversations are excluded. Conversations not yet classified have NULL outcome fields with `is_classified = FALSE`.
+Final quality layer. One row per classifiable conversation (generation, modification, diagnostic, consultation). Ghost, anomalous, and unknown conversations are excluded. Conversations not yet classified have NULL outcome fields with `is_classified = FALSE`. Rubric scores, reasoning, and `flag_dev_acknowledged` are additionally NULL for `inconclusive` outcomes.
 
 | Column | Type | Description |
 |---|---|---|
@@ -204,15 +208,15 @@ Final quality layer. One row per classifiable conversation (generation, modifica
 | `outcome` | VARCHAR | Classifier outcome label. NULL if not yet classified. |
 | `classified_as_type` | VARCHAR | `conversation_type` at time of classification. May differ from current label if type logic was updated. |
 | `classified_at` | TIMESTAMP_TZ | Timestamp of the most recent classification run. |
-| `question_understanding` | INTEGER | Rubric score 1-3. NULL if not classified. |
-| `resource_exhaustion` | INTEGER | Rubric score 1-3. NULL if not classified. |
-| `answer_grounding` | INTEGER | Rubric score 1-3. NULL if not classified. |
-| `actionability` | INTEGER | Rubric score 1-3. NULL if not classified. |
-| `flag_dev_acknowledged` | BOOLEAN | SQL output only. NULL for consultation and unclassified rows. |
-| `reasoning` | VARCHAR | Classifier explanation. NULL if not classified. |
-| `char_count` | INTEGER | Character count of conversation content fed to the classifier. |
+| `question_understanding` | INTEGER | Rubric score 1-3. NULL if not classified or outcome is `inconclusive`. |
+| `resource_exhaustion` | INTEGER | Rubric score 1-3. NULL if not classified or outcome is `inconclusive`. |
+| `answer_grounding` | INTEGER | Rubric score 1-3. NULL if not classified or outcome is `inconclusive`. |
+| `actionability` | INTEGER | Rubric score 1-3. NULL if not classified or outcome is `inconclusive`. |
+| `flag_dev_acknowledged` | BOOLEAN | SQL output only. NULL for consultation, diagnostic, unclassified, and `inconclusive` rows. |
+| `reasoning` | VARCHAR | Classifier explanation. NULL if not classified or `inconclusive`. |
+| `char_count` | INTEGER | Character count of conversation content fed to the classifier. Valid for all classified rows including `inconclusive`. |
 | `total_turns` | INTEGER | Total message turns. |
-| `total_user_messages` | INTEGER | Count of user message type rows. |
+| `total_user_messages` | INTEGER | Count of `user` message type rows. |
 | `run_count` | INTEGER | Number of runs in the conversation. |
 | `total_cost_usd` | FLOAT | Sum of API costs across all runs. |
 | `total_duration_ms` | INTEGER | Sum of all run durations in milliseconds. |
@@ -224,9 +228,9 @@ Final quality layer. One row per classifiable conversation (generation, modifica
 | `non_sql_write_count` | INTEGER | Number of non-SQL files written. |
 | `first_write_sequence` | INTEGER | Sequence number of first file write. |
 | `prefetch_to_write_gap` | INTEGER | Sequence gap between first prefetch and first write. |
-| `execute_sql_count` | INTEGER | Number of execute_sql tool calls. |
+| `execute_sql_count` | INTEGER | Number of `execute_sql` tool calls. |
 | `execute_sql_success_count` | INTEGER | Number of successful SQL executions. |
-| `permission_error_count` | INTEGER | Number of OperationalError (DB permission) failures. |
+| `permission_error_count` | INTEGER | Number of `OperationalError` (DB permission) failures. |
 | `code_review_count` | INTEGER | Number of code review tool calls. |
 | `code_review_score_first` | INTEGER | Score from the first code review. |
 | `code_review_score_last` | INTEGER | Score from the last code review. |
@@ -234,13 +238,14 @@ Final quality layer. One row per classifiable conversation (generation, modifica
 | `user_correction_count` | INTEGER | Proxy count of user correction turns. |
 | `user_rejected_tool_count` | INTEGER | Number of tool calls rejected by the user. |
 | `stale_doc_warning_count` | INTEGER | Number of stale documentation warnings. |
-| `tool_use_error_count` | INTEGER | Number of MCP layer failures (is_error = TRUE). |
-| `codebase_error_count` | INTEGER | Number of ImportError / ModuleNotFoundError occurrences. |
-| `has_generation_signal` | BOOLEAN | Post-prefetch AND prefetch_call_count > 0. |
-| `has_sql_write` | BOOLEAN | sql_write_count > 0. |
-| `has_non_sql_write` | BOOLEAN | non_sql_write_count > 0. |
-| `has_execute_sql` | BOOLEAN | execute_sql_count > 0. |
-| `has_user_interrupt` | BOOLEAN | user_rejected_tool_count > 0. |
+| `tool_use_error_count` | INTEGER | Number of MCP layer failures (`is_error = TRUE`). |
+| `codebase_error_count` | INTEGER | Number of `ImportError` / `ModuleNotFoundError` occurrences. |
+| `has_generation_signal` | BOOLEAN | Post-prefetch AND `prefetch_call_count > 0`. |
+| `has_sql_write` | BOOLEAN | `sql_write_count > 0`. |
+| `has_non_sql_write` | BOOLEAN | `non_sql_write_count > 0`. |
+| `has_non_sql_deliverable` | BOOLEAN | Alias of `has_non_sql_write`. Use to identify diagnostic conversations within consultation classifier results. |
+| `has_execute_sql` | BOOLEAN | `execute_sql_count > 0`. |
+| `has_user_interrupt` | BOOLEAN | `user_rejected_tool_count > 0`. |
 | `learning_extracted` | BOOLEAN | Whether the learning extraction pipeline has processed this conversation. |
 
 ---
