@@ -39,23 +39,23 @@ def get_snowflake_connection():
 # ── Fetch SQL output conversation IDs ─────────────────────────────────────────
 
 # Fetch converations that hit retry limit
-def fetch_sql_output_ids(conn) -> list[int]:
-    return [19, 210, 609, 633]
-
 # def fetch_sql_output_ids(conn) -> list[int]:
-#     query = """
-#         SELECT t.conversation_id
-#         FROM INT_CONVERSATION_TYPE t
-#         WHERE t.conversation_type IN ('generation', 'modification')
-#           AND t.conversation_id NOT IN (
-#               SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
-#           )
-#         ORDER BY t.conversation_id
-#     """
-#     cursor = conn.cursor()
-#     cursor.execute(query)
-#     rows = cursor.fetchall()
-#     return [row[0] for row in rows]
+#     return [19, 210, 609, 633]
+
+def fetch_sql_output_ids(conn) -> list[int]:
+    query = """
+        SELECT t.conversation_id
+        FROM INT_CONVERSATION_TYPE t
+        WHERE t.conversation_type IN ('generation', 'modification')
+          AND t.conversation_id NOT IN (
+              SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
+          )
+        ORDER BY t.conversation_id
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    return [row[0] for row in rows]
 
 # ── Fetch conversation thread from Snowflake ──────────────────────────────────
 def fetch_conversation(conn, conversation_id: int) -> str:
@@ -228,22 +228,22 @@ Respond only with valid JSON. No preamble, no explanation outside the JSON.
 """
 
 # ── Truncate long conversations while preserving key context ──────────────────
-# def truncate_conversation(content: str, max_chars: int = 30000) -> str:
-#     if len(content) <= max_chars:
-#         return content
-#     keep_start = 20000
-#     keep_end = 10000
-#     middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
-#     return content[:keep_start] + middle_msg + content[-keep_end:]
-
-# PATCH VERSION
-def truncate_conversation(content: str, max_chars: int = 20000) -> str:
+def truncate_conversation(content: str, max_chars: int = 30000) -> str:
     if len(content) <= max_chars:
         return content
-    keep_start = int(max_chars * 0.67)
-    keep_end = max_chars - keep_start
+    keep_start = 20000
+    keep_end = 10000
     middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
     return content[:keep_start] + middle_msg + content[-keep_end:]
+
+# # PATCH VERSION
+# def truncate_conversation(content: str, max_chars: int = 20000) -> str:
+#     if len(content) <= max_chars:
+#         return content
+#     keep_start = int(max_chars * 0.67)
+#     keep_end = max_chars - keep_start
+#     middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
+#     return content[:keep_start] + middle_msg + content[-keep_end:]
 
 
 # ── Wrapper to handle rate limits with exponential backoff ────────────────────
@@ -326,23 +326,23 @@ def run_full_classification(backup_path: str = "sql_output_outcomes.json"):
     conn = get_snowflake_connection()
     results = []
 
-    # PATCH RUN — hardcoded retry list
-    id_type_pairs = [(19, 'modification'), (210, 'modification'),
-                     (609, 'generation'), (633, 'modification')]
+    # # PATCH RUN — hardcoded retry list
+    # id_type_pairs = [(19, 'modification'), (210, 'modification'),
+    #                  (609, 'generation'), (633, 'modification')]
 
-    # # Normal run — fetch from Snowflake
-    # query = """
-    #     SELECT t.conversation_id, t.conversation_type
-    #     FROM INT_CONVERSATION_TYPE t
-    #     WHERE t.conversation_type IN ('generation', 'modification')
-    #       AND t.conversation_id NOT IN (
-    #           SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
-    #       )
-    #     ORDER BY t.conversation_id
-    # """
-    # cursor = conn.cursor()
-    # cursor.execute(query)
-    # id_type_pairs = cursor.fetchall()
+    # Normal run — fetch from Snowflake
+    query = """
+        SELECT t.conversation_id, t.conversation_type
+        FROM INT_CONVERSATION_TYPE t
+        WHERE t.conversation_type IN ('generation', 'modification')
+          AND t.conversation_id NOT IN (
+              SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
+          )
+        ORDER BY t.conversation_id
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    id_type_pairs = cursor.fetchall()
 
     total = len(id_type_pairs)
     print(f"Found {total} SQL output conversations to classify\n")
@@ -406,8 +406,9 @@ def run_full_classification(backup_path: str = "sql_output_outcomes.json"):
 
     return results
 
-# if __name__ == "__main__":
-#     run_full_classification()
-
 if __name__ == "__main__":
-    run_full_classification(backup_path="sql_output_outcomes_patch.json")
+    run_full_classification()
+
+# # PATCH JSON output
+# if __name__ == "__main__":
+#     run_full_classification(backup_path="sql_output_outcomes_patch.json")
