@@ -12,7 +12,7 @@
 
 SELECT
     conversation_id,
-
+    corpus_era,
     -- boolean signals
     total_turns = 0                                         AS is_ghost,
     total_turns > 75                                        AS is_anomalous,
@@ -33,7 +33,7 @@ SELECT
     user_rejected_tool_count > 0                            AS has_user_interrupt,
 
     -- type classification derived from boolean combinations
-    -- priority: ghost > anomalous > unknown > generation > complex > modification > diagnostic > consultation
+-- priority: ghost > anomalous > unknown > generation > modification > diagnostic > consultation
     CASE
         WHEN total_turns = 0
             THEN 'ghost'
@@ -48,17 +48,10 @@ SELECT
         WHEN corpus_era = 'post_prefetch'
             AND prefetch_call_count > 0
             AND sql_write_count > 0
-            AND non_sql_write_count = 0
             THEN 'generation'
-        WHEN corpus_era = 'post_prefetch'
-            AND prefetch_call_count > 0
-            AND non_sql_write_count > 0
-            THEN 'complex'
         WHEN sql_write_count > 0
-            AND non_sql_write_count = 0
             THEN 'modification'
         WHEN non_sql_write_count > 0
-            AND sql_write_count = 0
             THEN 'diagnostic'
         ELSE
             'consultation'

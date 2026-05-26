@@ -34,3 +34,5 @@ models:
   rag_eval:
     staging:
       +materialized: view
+    marts:
+      +materialized: table

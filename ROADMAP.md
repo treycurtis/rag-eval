@@ -26,39 +26,40 @@
   - Validation harness with 5 cases + blind test
   - Harness hardened: retry logic, parallelization, truncation, token budget
 
+- Prompt 1 — SQL Output Classifier ✅
+  - Covers generation + modification (271 conversations)
+  - Results in `INT_CONVERSATION_OUTCOMES_RAW`
+  - Same harness pattern as Prompt 2
+  - Grounded in real corpus examples, built and validated clean
+  - Blind test (conv 702) validated as `failure_environment`
+  - Internal branding scrubbed from all classifier files
+  - Data dictionary updated and committed
+
+
 ---
 
 ## 🔲 Next Up
 
-### Prompt 1 — SQL Output Classifier
-- Covers generation + modification (~267 conversations)
-- Read 3-4 examples first: clean first-try generation, iterative modification, failed generation
-- Key label: `success_needs_validation` for dev/prod value uncertainty
-- Bump `user` truncation limit to 4000 for large SQL pastes
-- Same harness pattern as Prompt 2
-
-### Wire Output to Snowflake
-- `INT_CONVERSATION_OUTCOMES_RAW` already exists and has consultation results
-- Add generation + modification rows from Prompt 1 run
-- `conversation_type` column already in schema to distinguish
-
 ### `fct_conversation_outcomes`
-- Joins `int_conversation_metrics` + `int_conversation_type` + `INT_CONVERSATION_OUTCOMES_RAW`
-- Final quality layer — one row per classifiable conversation with full signal set
+- One row per classifiable conversation with complete quality signal
+- Joins:
+  - `INT_CONVERSATION_METRICS` — behavioral signals (turns, cost, permission errors, code review trajectory)
+  - `INT_CONVERSATION_TYPE` — conversation type label
+  - `INT_CONVERSATION_OUTCOMES_RAW` — classifier outcome + rubric scores (deduplicated on MAX(classified_at))
+- This model completes the quality signal layer — the north star from the original project brief
+- Once complete: RAGAS scores gate the learning extraction pipeline and the self-improving loop closes
 
-### Commit `int_conversation_type`
-- Iterated in place, needs a clean commit
 
 ---
 
 ## 🗓 Upcoming (Ordered)
 
-1. Prompt 1 prompt design + few-shot examples
-2. Prompt 1 harness (copy Prompt 2 pattern, update fetch query and prompt)
-3. Prompt 1 validation harness
-4. Prompt 1 full run
-5. `fct_conversation_outcomes` dbt model
-6. Learning extraction pipeline gate (outcome scores → only high-quality conversations generate doc updates)
+1. `fct_conversation_outcomes` dbt model
+2. Learning extraction pipeline gate (outcome scores → only high-quality conversations generate doc updates)
+3. PyTorch fine-tuning on classifier labels + MLflow logging
+4. GitHub Actions CI pipeline
+5. pgvector on Postgres for arXiv semantic search
+6. FastAPI model router on ECS Fargate
 7. Streamlit diagnostic dashboard (score distributions, A/B prompt/model comparison, retrieval coverage heatmap, drift alerts, sample explorer)
 8. RAGAS retrieval metrics (optional downstream addition — context precision/recall for schema retrieval quality)
 

@@ -29,6 +29,16 @@ sources:
           - name: ingested_at
             description: "Date the paper was ingested into the data warehouse"
 
+  - name: classifier_output
+    database: rag_eval
+    schema: staging
+    tables:
+      - name: int_conversation_outcomes_raw
+        description: >
+          Raw classifier output. Written by Python classifier scripts (run_consultation_classifier.py,
+          run_sql_output_classifier.py). One row per classification run — not unique on conversation_id.
+          Deduplicate on MAX(classified_at) per conversation before joining.
+
   - name: querybot
     database: rag_eval
     schema: querybot

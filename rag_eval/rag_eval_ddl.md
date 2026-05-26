@@ -186,8 +186,62 @@ One row per classified conversation. Written by the Python classifier scripts, n
 
 ## Pending Models
 
-### `FCT_CONVERSATION_OUTCOMES` (not yet built)
-Final quality layer. Will join `INT_CONVERSATION_METRICS` + `INT_CONVERSATION_TYPE` + `INT_CONVERSATION_OUTCOMES_RAW` into one row per classifiable conversation with full signal set.
+~~### `FCT_CONVERSATION_OUTCOMES` (not yet built)~~
+~~Final quality layer. Will join `INT_CONVERSATION_METRICS` + `INT_CONVERSATION_TYPE` + `INT_CONVERSATION_OUTCOMES_RAW` into one row per classifiable conversation with full signal set.~~
+
+---
+
+## Marts Models (dbt)
+
+### `FCT_CONVERSATION_OUTCOMES`
+Final quality layer. One row per classifiable conversation (generation, modification, diagnostic, consultation). Ghost, anomalous, unknown, and complex conversations are excluded. Conversations not yet classified have NULL outcome fields with `is_classified = FALSE`.
+
+| Column | Type | Description |
+|---|---|---|
+| `conversation_id` | INTEGER | Primary key. |
+| `conversation_type` | VARCHAR | Type label from `INT_CONVERSATION_TYPE`. One of: `generation`, `modification`, `diagnostic`, `consultation`. |
+| `is_classified` | BOOLEAN | TRUE if a classifier result exists for this conversation. |
+| `outcome` | VARCHAR | Classifier outcome label. NULL if not yet classified. |
+| `classified_as_type` | VARCHAR | `conversation_type` at time of classification. May differ from current label if type logic was updated. |
+| `classified_at` | TIMESTAMP_TZ | Timestamp of the most recent classification run. |
+| `question_understanding` | INTEGER | Rubric score 1-3. NULL if not classified. |
+| `resource_exhaustion` | INTEGER | Rubric score 1-3. NULL if not classified. |
+| `answer_grounding` | INTEGER | Rubric score 1-3. NULL if not classified. |
+| `actionability` | INTEGER | Rubric score 1-3. NULL if not classified. |
+| `flag_dev_acknowledged` | BOOLEAN | SQL output only. NULL for consultation and unclassified rows. |
+| `reasoning` | VARCHAR | Classifier explanation. NULL if not classified. |
+| `char_count` | INTEGER | Character count of conversation content fed to the classifier. |
+| `total_turns` | INTEGER | Total message turns. |
+| `total_user_messages` | INTEGER | Count of user message type rows. |
+| `run_count` | INTEGER | Number of runs in the conversation. |
+| `total_cost_usd` | FLOAT | Sum of API costs across all runs. |
+| `total_duration_ms` | INTEGER | Sum of all run durations in milliseconds. |
+| `avg_run_duration_ms` | FLOAT | Average run duration in milliseconds. |
+| `corpus_era` | VARCHAR | `pre_prefetch` or `post_prefetch`. |
+| `prefetch_call_count` | INTEGER | Number of schema_prefetch tool calls. |
+| `first_prefetch_sequence` | INTEGER | Sequence number of first schema_prefetch call. |
+| `sql_write_count` | INTEGER | Number of SQL files written. |
+| `non_sql_write_count` | INTEGER | Number of non-SQL files written. |
+| `first_write_sequence` | INTEGER | Sequence number of first file write. |
+| `prefetch_to_write_gap` | INTEGER | Sequence gap between first prefetch and first write. |
+| `execute_sql_count` | INTEGER | Number of execute_sql tool calls. |
+| `execute_sql_success_count` | INTEGER | Number of successful SQL executions. |
+| `permission_error_count` | INTEGER | Number of OperationalError (DB permission) failures. |
+| `code_review_count` | INTEGER | Number of code review tool calls. |
+| `code_review_score_first` | INTEGER | Score from the first code review. |
+| `code_review_score_last` | INTEGER | Score from the last code review. |
+| `code_review_score_delta` | INTEGER | Last minus first code review score. Positive = improvement. |
+| `user_correction_count` | INTEGER | Proxy count of user correction turns. |
+| `user_rejected_tool_count` | INTEGER | Number of tool calls rejected by the user. |
+| `stale_doc_warning_count` | INTEGER | Number of stale documentation warnings. |
+| `tool_use_error_count` | INTEGER | Number of MCP layer failures (is_error = TRUE). |
+| `codebase_error_count` | INTEGER | Number of ImportError / ModuleNotFoundError occurrences. |
+| `has_generation_signal` | BOOLEAN | Post-prefetch AND prefetch_call_count > 0. |
+| `has_sql_write` | BOOLEAN | sql_write_count > 0. |
+| `has_non_sql_write` | BOOLEAN | non_sql_write_count > 0. |
+| `has_execute_sql` | BOOLEAN | execute_sql_count > 0. |
+| `has_user_interrupt` | BOOLEAN | user_rejected_tool_count > 0. |
+| `learning_extracted` | BOOLEAN | Whether the learning extraction pipeline has processed this conversation. |
 
 ---
 

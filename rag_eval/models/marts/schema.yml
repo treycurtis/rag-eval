@@ -1,0 +1,151 @@
+version: 2
+
+models:
+  - name: fct_conversation_outcomes
+    description: >
+      One row per classifiable conversation (generation, modification, diagnostic, consultation).
+      Ghost, anomalous, diagnostic, lookup, and unknown conversations are excluded.
+      Joins INT_CONVERSATION_TYPE + INT_CONVERSATION_METRICS + INT_CONVERSATION_OUTCOMES_RAW.
+      Conversations without a classifier result have NULL outcome fields (is_classified = FALSE).
+    columns:
+      - name: conversation_id
+        description: "Primary key. Foreign key to STG_CONVERSATIONS."
+        tests:
+          - unique
+          - not_null
+
+      - name: conversation_type
+        description: "Type label from INT_CONVERSATION_TYPE."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['generation', 'modification', 'diagnostic', 'consultation']
+
+      - name: is_classified
+        description: "TRUE if a classifier result exists for this conversation."
+        tests:
+          - not_null
+
+      - name: outcome
+        description: "Classifier outcome label. NULL if not classified."
+
+      - name: classified_as_type
+        description: "conversation_type at time of classification. NULL if not classified."
+
+      - name: classified_at
+        description: "Timestamp of the most recent classification run. NULL if not classified."
+
+      - name: question_understanding
+        description: "Rubric score 1-3. NULL if not classified."
+
+      - name: resource_exhaustion
+        description: "Rubric score 1-3. NULL if not classified."
+
+      - name: answer_grounding
+        description: "Rubric score 1-3. NULL if not classified."
+
+      - name: actionability
+        description: "Rubric score 1-3. NULL if not classified."
+
+      - name: flag_dev_acknowledged
+        description: "SQL output only. Whether querybot proactively noted dev environment limitations. NULL for consultation and unclassified rows."
+
+      - name: reasoning
+        description: "2-3 sentence classifier explanation. NULL if not classified."
+
+      - name: char_count
+        description: "Character count of the conversation content fed to the classifier."
+
+      - name: total_turns
+        description: "Total message turns in the conversation."
+
+      - name: total_user_messages
+        description: "Count of user message type rows."
+
+      - name: run_count
+        description: "Number of runs in the conversation."
+
+      - name: total_cost_usd
+        description: "Sum of API costs across all runs."
+
+      - name: total_duration_ms
+        description: "Sum of all run durations in milliseconds."
+
+      - name: avg_run_duration_ms
+        description: "Average run duration in milliseconds."
+
+      - name: corpus_era
+        description: "pre_prefetch or post_prefetch — indicates whether schema_prefetch tooling was available."
+
+      - name: prefetch_call_count
+        description: "Number of schema_prefetch tool calls."
+
+      - name: first_prefetch_sequence
+        description: "Sequence number of the first schema_prefetch call."
+
+      - name: sql_write_count
+        description: "Number of SQL files written."
+
+      - name: non_sql_write_count
+        description: "Number of non-SQL files written."
+
+      - name: first_write_sequence
+        description: "Sequence number of the first file write."
+
+      - name: prefetch_to_write_gap
+        description: "Sequence gap between first prefetch and first write."
+
+      - name: execute_sql_count
+        description: "Number of execute_sql tool calls."
+
+      - name: execute_sql_success_count
+        description: "Number of successful SQL executions."
+
+      - name: permission_error_count
+        description: "Number of OperationalError (DB permission) failures."
+
+      - name: code_review_count
+        description: "Number of code review tool calls."
+
+      - name: code_review_score_first
+        description: "Score from the first code review in the conversation."
+
+      - name: code_review_score_last
+        description: "Score from the last code review in the conversation."
+
+      - name: code_review_score_delta
+        description: "Difference between last and first code review score. Positive = improvement."
+
+      - name: user_correction_count
+        description: "Proxy count of user correction turns."
+
+      - name: user_rejected_tool_count
+        description: "Number of tool calls rejected by the user."
+
+      - name: stale_doc_warning_count
+        description: "Number of stale documentation warnings surfaced by the schema tool."
+
+      - name: tool_use_error_count
+        description: "Number of tool calls where is_error = TRUE (MCP layer failures)."
+
+      - name: codebase_error_count
+        description: "Number of codebase-related errors (ImportError, ModuleNotFoundError)."
+
+      - name: has_generation_signal
+        description: "Post-prefetch AND prefetch_call_count > 0."
+
+      - name: has_sql_write
+        description: "sql_write_count > 0."
+
+      - name: has_non_sql_write
+        description: "non_sql_write_count > 0."
+
+      - name: has_execute_sql
+        description: "execute_sql_count > 0."
+
+      - name: has_user_interrupt
+        description: "user_rejected_tool_count > 0."
+
+      - name: learning_extracted
+        description: "Whether the learning extraction pipeline has processed this conversation."
