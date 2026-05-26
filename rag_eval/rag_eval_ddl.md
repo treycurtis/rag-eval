@@ -131,11 +131,11 @@ One row per conversation. Assigns a conversation type label based on behavioral 
 | `anomalous` | 36 | `total_turns > 75`. Excluded from classifiable corpus. |
 | `unknown` | 137 | Pre-prefetch era, insufficient signals to classify. Excluded. |
 | `generation` | 61 | Querybot wrote a new SQL file in response to a user request. |
-| `modification` | 206 | Querybot modified an existing SQL file. Includes former `complex` type (has_non_sql_write). |
+| `modification` | 203 | Querybot modified an existing SQL file. Includes former `complex` type (has_non_sql_write). |
 | `diagnostic` | 19 | Querybot executed SQL queries for diagnostic/validation purposes without writing files. |
 | `consultation` | 143 | Querybot answered questions without writing any files. Catch-all for schema/doc/logic lookups. |
 
-**Classifiable corpus: 429 conversations** (generation + modification + diagnostic + consultation)
+**Classifiable corpus: 426 conversations** (generation + modification + diagnostic + consultation)
 
 ---
 
@@ -148,17 +148,18 @@ One row per classified conversation. Written by the Python classifier scripts, n
 |---|---|---|
 | `conversation_id` | INTEGER | Foreign key to `STG_CONVERSATIONS`. Not enforced as unique — patch runs can create duplicates; use `MAX(classified_at)` to deduplicate. |
 | `conversation_type` | VARCHAR | Type label at time of classification (`consultation`, `generation`, `modification`). |
-| `outcome` | VARCHAR | Classifier outcome label. See outcome labels below. |
+| `outcome` | VARCHAR | Classifier outcome label. See outcome labels below — labels differ by conversation type. |
 | `question_understanding` | INTEGER | Rubric score 1-3. Did querybot correctly interpret the question? |
 | `resource_exhaustion` | INTEGER | Rubric score 1-3. Did querybot use available tools appropriately? |
 | `answer_grounding` | INTEGER | Rubric score 1-3. Was the conclusion supported by evidence? |
 | `actionability` | INTEGER | Rubric score 1-3. Could the user act on the response? |
+| `flag_dev_acknowledged` | BOOLEAN | SQL output only. Whether querybot proactively noted dev environment limitations. NULL for consultation rows. |
 | `reasoning` | VARCHAR | 2-3 sentence explanation of the outcome label from the classifier. |
 | `char_count` | INTEGER | Character count of the assembled conversation content fed to the classifier (before truncation). |
 | `error` | VARCHAR | Error message if classification failed. NULL on success. |
 | `classified_at` | TIMESTAMP_TZ | When the classification was written. |
 
-**Outcome labels:**
+**Outcome labels — consultation (`run_consultation_classifier.py`):**
 | Outcome | Description |
 |---|---|
 | `success_clean` | Querybot understood the question, used tools appropriately, grounded its answer in evidence, and gave the user something actionable. |
@@ -168,7 +169,18 @@ One row per classified conversation. Written by the Python classifier scripts, n
 | `failure_abandoned` | Conversation ended prematurely — infrastructure failure, user stopped responding, or connection dropped. |
 | `inconclusive` | Too short, too ambiguous, or clearly a test/diagnostic session with no substantive exchange. |
 
-**Current coverage:** 143 consultation conversations. Generation + modification (~267) pending Prompt 1.
+**Outcome labels — SQL output (`run_sql_output_classifier.py`):**
+| Outcome | Description |
+|---|---|
+| `success_clean` | Querybot understood the request, used appropriate tools, produced correct SQL, and the user got a working result. |
+| `success_iterative` | Querybot ultimately delivered working SQL but required meaningful back-and-forth — user corrections, misunderstandings resolved, multiple revision cycles. |
+| `failure_wrong_direction` | Querybot misunderstood the requirement and didn't self-correct. User did not get working SQL. |
+| `failure_environment` | Querybot built logically correct SQL but couldn't execute or validate it due to environment blockers outside its control (role not selected, IF block restriction, no DB access). |
+| `failure_schema_gap` | Querybot searched thoroughly but the schema, memory, and documentation did not contain what was needed. Not querybot's fault. |
+| `failure_abandoned` | Conversation ended before querybot could complete the SQL — session termination, not environment blocker. |
+| `inconclusive` | Too short, too ambiguous, or a test/diagnostic session. Also used when querybot was asked to review SQL but no file was written. |
+
+**Current coverage:** 271 classified rows (143 consultation + 264 generation/modification + 3 manual `failure_abandoned` + 1 patch). Diagnostic conversations (19) pending their own prompt.
 
 ---
 
