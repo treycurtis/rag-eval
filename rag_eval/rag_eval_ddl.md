@@ -11,10 +11,24 @@ One row per conversation. Source: production assistant Postgres.
 
 | Column | Type | Description |
 |---|---|---|
-| `conversation_id` | INTEGER | Primary key. Unique identifier for each conversation session. |
-| `created_at` | TIMESTAMP_TZ | When the conversation was initiated. |
-| `updated_at` | TIMESTAMP_TZ | Last activity timestamp. |
-| `learning_extracted` | BOOLEAN | Whether the learning extraction pipeline processed this conversation. |
+| `id` | INTEGER | Primary key. Unique identifier for each conversation session. |
+| `user_id` | INTEGER | Identifier for the user who had the conversation. |
+| `conversation_uuid` | VARCHAR | UUID for the conversation. |
+| `sdk_session_id` | VARCHAR | SDK session ID for the conversation. |
+| `title` | VARCHAR | Title of the conversation. |
+| `is_active` | BOOLEAN | Whether the conversation is currently active. |
+| `message_count` | INTEGER | Number of messages in the conversation. |
+| `total_runs` | INTEGER | Total number of runs in the conversation. |
+| `total_turns` | INTEGER | Total number of turns across all runs. |
+| `total_cost_usd` | NUMERIC(10,4) | Total API cost in USD. |
+| `total_duration_ms` | INTEGER | Total duration of all runs in milliseconds. |
+| `last_message_at` | TIMESTAMP_NTZ | Timestamp of the last message. |
+| `last_run_at` | TIMESTAMP_NTZ | Timestamp of the last run. |
+| `learning_extraction_status` | VARCHAR | Status of the learning extraction pipeline for this conversation. |
+| `learning_extracted_at` | TIMESTAMP_NTZ | When learning extraction completed. NULL if not yet run. |
+| `summary` | VARCHAR | Summary of the conversation. |
+| `created_at` | TIMESTAMP_NTZ | When the conversation was initiated. |
+| `updated_at` | TIMESTAMP_NTZ | Last activity timestamp. |
 
 ---
 
@@ -23,11 +37,15 @@ One row per run within a conversation. A conversation can have multiple runs (e.
 
 | Column | Type | Description |
 |---|---|---|
-| `run_id` | VARCHAR | Primary key. Unique identifier for the run. |
+| `id` | INTEGER | Primary key. Unique identifier for the run. |
 | `conversation_id` | INTEGER | Foreign key to `STG_CONVERSATIONS`. |
-| `cost_usd` | FLOAT | API cost for this run in USD. |
+| `user_message_id` | INTEGER | Identifier for the user message that triggered the run. |
+| `num_turns` | INTEGER | Number of turns in this run. |
 | `duration_ms` | INTEGER | Wall clock time for the run in milliseconds. |
-| `created_at` | TIMESTAMP_TZ | When the run started. |
+| `cost_usd` | NUMERIC(10,4) | API cost for this run in USD. |
+| `sdk_session_id` | VARCHAR | SDK session ID for the run. |
+| `started_at` | TIMESTAMP_NTZ | When the run started. |
+| `completed_at` | TIMESTAMP_NTZ | When the run completed. |
 
 ---
 
@@ -44,7 +62,7 @@ One row per message within a conversation. This is the most granular table — a
 | `tool_use_id` | VARCHAR | Links `tool_call` and `tool_result` rows for the same tool invocation. |
 | `is_error` | BOOLEAN | Whether the message represents an error state. |
 | `sequence_number` | INTEGER | Ordering within the conversation. Ascending. |
-| `created_at` | TIMESTAMP_TZ | When the message was persisted. |
+| `created_at` | TIMESTAMP_NTZ | When the message was persisted. |
 
 **Message types:**
 
@@ -63,13 +81,13 @@ One row per arXiv paper ingested. Separate pipeline from the conversation eval t
 | Column | Type | Description |
 |---|---|---|
 | `paper_id` | VARCHAR | Primary key. arXiv paper identifier (e.g. `2401.00001`). |
+| `arxiv_url` | VARCHAR | URL to the paper on arXiv. |
 | `title` | VARCHAR | Paper title. |
-| `authors` | VARCHAR | Author list. |
 | `abstract` | VARCHAR | Full abstract text. |
+| `authors` | VARCHAR | Author list. |
 | `categories` | VARCHAR | arXiv category tags. |
-| `published_date` | DATE | Original publication date. |
-| `updated_date` | DATE | Last updated date on arXiv. |
-| `ingested_at` | TIMESTAMP_TZ | When the paper was ingested into S3 and Snowflake. |
+| `published_date` | TIMESTAMP_NTZ | Original publication date. |
+| `ingested_date` | TIMESTAMP_NTZ | When the paper was ingested into S3 and Snowflake. |
 
 ---
 
@@ -191,8 +209,8 @@ One row per classification run. Written by the Python classifier scripts, not db
 | `failure_abandoned` | Conversation ended before querybot could complete the SQL — session termination, not environment blocker. |
 | `inconclusive` | Too short, too ambiguous, or a test/diagnostic session. Also used when querybot was asked to review SQL but no file was written. |
 
-**Current coverage:** 271 classified rows (143 consultation + 264 generation/modification + 3 manual `failure_abandoned` + 1 patch). Diagnostic conversations (20) pending — route to consultation classifier prompt.
-
+**Current coverage:** 407 classified rows across 429 classifiable conversations. 
+22 unclassified remaining. Diagnostic conversations (20) included, routed to consultation classifier prompt
 ---
 
 ## Marts Models (dbt)
