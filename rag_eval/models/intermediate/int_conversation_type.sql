@@ -1,8 +1,3 @@
-{{
-    config(
-        materialized='table'
-    )
-}}
 
 -- int_conversation_type
 -- Rule-based conversation type classification.

@@ -34,5 +34,13 @@ models:
   rag_eval:
     staging:
       +materialized: view
+      +database: rag_eval
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +database: rag_eval
+      +schema: intermediate
     marts:
       +materialized: table
+      +database: rag_eval
+      +schema: marts

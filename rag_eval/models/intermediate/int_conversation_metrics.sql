@@ -1,10 +1,4 @@
 
-{{
-    config(
-        materialized='table'
-    )
-}}
-
 -- int_conversation_metrics
 -- One row per conversation. Aggregates behavioral signals from stg_conversation_messages
 -- to support outcome classification in fct_conversation_outcomes.

@@ -1,8 +1,3 @@
-{{
-    config(
-        materialized='table'
-    )
-}}
 
 -- fct_conversation_outcomes
 -- One row per classifiable conversation (generation, modification, diagnostic, consultation).
