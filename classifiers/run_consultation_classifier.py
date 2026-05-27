@@ -1,4 +1,16 @@
 
+# TODO v2: Relevance pre-classifier
+# Before running the full outcome rubric, score each conversation 1-3 on relevance
+# to querybot's core job (schema lookup, SQL generation, data analysis support).
+# Score 1 = capability test, environment debug, or off-task (skip outcome classification).
+# Score 2-3 = proceed to full classifier.
+# Gate logic: learning extraction requires relevance >= 2 AND outcome in success tier.
+# Benefit: separates "not scoreable" (inconclusive) from "not relevant" (relevance=1),
+# cleans outcome distributions, and makes learning gate decisions auditable.
+# Also enables relevance scoring of unknown/pre-prefetch corpus without new type logic.
+# Excluded conversation IDs (hardcoded): [49] — capability tests confirmed non-relevant.
+
+
 import anthropic
 import json
 import os
@@ -122,7 +134,7 @@ Based on the four dimensions, assign one of the following outcome labels:
 
 **success_with_correction** — querybot initially went in a wrong direction but self-corrected when redirected by the user, and ultimately delivered an actionable response. At least one dimension scored 2 but the final answer was solid.
 
-**failure_knowledge_gap** — querybot searched thoroughly and in good faith but the schema, documentation, and memory system did not contain enough information to answer the question. Querybot correctly identified the gap. Not querybot's fault — the knowledge simply wasn't available.
+**failure_knowledge_gap** — querybot searched thoroughly and in good faith but the schema, documentation, and memory system did not contain enough information to answer the question. Querybot searched thoroughly and came up empty, whether or not it explicitly named the gap — the absence of available information is what defines this outcome, not querybot's meta-awareness of it. Not querybot's fault — the knowledge simply wasn't available.
 
 **failure_wrong_direction** — querybot misunderstood the question or pursued a clearly wrong approach without self-correcting, and the user did not get what they needed.
 

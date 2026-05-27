@@ -1,3 +1,16 @@
+
+# TODO v2: Relevance pre-classifier
+# Before running the full outcome rubric, score each conversation 1-3 on relevance
+# to querybot's core job (schema lookup, SQL generation, data analysis support).
+# Score 1 = capability test, environment debug, or off-task (skip outcome classification).
+# Score 2-3 = proceed to full classifier.
+# Gate logic: learning extraction requires relevance >= 2 AND outcome in success tier.
+# Benefit: separates "not scoreable" (inconclusive) from "not relevant" (relevance=1),
+# cleans outcome distributions, and makes learning gate decisions auditable.
+# Also enables relevance scoring of unknown/pre-prefetch corpus without new type logic.
+# Excluded conversation IDs (hardcoded): [49] — capability tests confirmed non-relevant.
+
+
 import anthropic
 import json
 import os
@@ -133,13 +146,13 @@ Did the conversation end with something the user could actually use?
 
 Based on the four dimensions, assign one of the following outcome labels:
 
-**success_clean** — querybot understood the request, used appropriate tools, produced correct SQL, and the user got a working result. Includes cases where querybot correctly acknowledges dev environment limitations. Code review iteration that fixes real issues is still success_clean as long as the arc was efficient. Scores mostly 3s.
+**success_clean** — querybot understood the request, used appropriate tools, produced correct SQL, and the user got a working result. flag_dev_acknowledged may be TRUE on a success_clean outcome — proactively noting dev limitations is good behavior, not a failure signal. Only use failure_environment if the SQL could not be executed or validated due to an environment blocker. Code review iteration that fixes real issues is still success_clean as long as the arc was efficient. Scores mostly 3s.
 
 **success_iterative** — querybot ultimately delivered working SQL, but required meaningful back-and-forth to get there. This includes: user corrections that changed the approach, misunderstandings that were resolved, multiple revision cycles driven by user feedback, or conversations where querybot initially misread the ask but recovered. The end state is a success but the path was inefficient. Scores mix of 2s and 3s.
 
 **failure_wrong_direction** — querybot misunderstood the requirement and didn't self-correct, or went down a fundamentally wrong path that the user couldn't redirect. The user did not get working SQL.
 
-**failure_environment** — querybot built SQL that appears logically correct, but couldn't execute or validate it due to blockers outside its control: role not selected, IF block executor restriction, no DB access configured, cross-database permission errors. The SQL artifact itself may be sound but the outcome is unvalidated. Distinct from failure_wrong_direction — the SQL is plausible; the environment blocked it.
+**failure_environment** — querybot built SQL that appears logically correct, but couldn't execute or validate it due to blockers outside its control: role not selected, IF block executor restriction, no DB access configured, cross-database permission errors. The SQL artifact itself may be sound but the outcome is unvalidated. Distinct from failure_wrong_direction — the SQL is plausible; the environment blocked it. flag_dev_acknowledged is independent of this outcome — it may be TRUE or FALSE regardless of whether an environment blocker occurred.
 
 **failure_schema_gap** — querybot searched thoroughly and in good faith but the schema, memory, and documentation did not contain enough information to answer the question. Querybot correctly identified the gap. Not querybot's fault — the data simply doesn't exist in the warehouse.
 
