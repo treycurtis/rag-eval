@@ -336,7 +336,13 @@ def classify_conversation(conversation_content: str) -> dict:
 
     raw = response.content[0].text.strip()
     raw = re.sub(r"```json|```", "", raw).strip()
-    result = json.loads(raw)
+    # The model occasionally appends trailing prose after the JSON object, which makes a
+    # bare json.loads(raw) fail with "Extra data". Decode exactly one object from the first
+    # '{' and ignore anything after it.
+    start = raw.find("{")
+    if start == -1:
+        raise ValueError(f"No JSON object in response: {raw}")
+    result, _ = json.JSONDecoder().raw_decode(raw[start:])
 
     if not result.get("outcome"):
         raise ValueError(f"Missing outcome field in response: {raw}")

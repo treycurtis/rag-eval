@@ -235,3 +235,144 @@ models:
         description: "Character count of conversation content fed to the classifier."
       - name: error
         description: "Error message if this classification run failed. NULL on success."
+
+  - name: fct_validation_runs
+    description: >
+      One row per (validation_run_id, conversation_id) — the cleaned view of the append-only
+      validation ledger. Each row is one judge-vs-human comparison for a golden-set case at the
+      prompt_version current when the run executed. Every run is kept (not collapsed to latest):
+      the cross-run history is the drift signal. Errors (unparseable/API-failed classifications)
+      are flagged via is_error and excluded from agreement, not treated as disagreements.
+    columns:
+      - name: validation_case_key
+        description: "Surrogate key MD5(validation_run_id || '-' || conversation_id). Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: validation_run_id
+        description: "Identifier shared by all cases scored in one validation run."
+        tests:
+          - not_null
+      - name: run_at
+        description: "Timestamp of the validation run."
+        tests:
+          - not_null
+      - name: conversation_id
+        description: "Golden-set conversation that was scored."
+        tests:
+          - not_null
+      - name: label_cohort
+        description: "Immutable label cohort the case belongs to (from SEED_VALIDATION_LABELS)."
+      - name: is_blind
+        description: "TRUE if the case is a blind test (excluded from headline agreement)."
+      - name: prompt_version
+        description: "Classifier fingerprint (hash of model + prompt) at run time. The drift control variable."
+        tests:
+          - not_null
+      - name: model_version
+        description: "Anthropic model used as judge for this run."
+      - name: prompt_hash
+        description: "Short SHA-256 of (model + prompt text)."
+      - name: expected_outcome
+        description: "Human ground-truth outcome label (independent of the judge)."
+      - name: actual_outcome
+        description: "Judge's outcome label. NULL on error."
+      - name: outcome_passed
+        description: "TRUE if actual_outcome == expected_outcome."
+      - name: is_scored
+        description: "TRUE if the judge returned a parseable result (error IS NULL)."
+      - name: is_error
+        description: "TRUE if the classification failed (API/parse error). Excluded from agreement."
+      - name: error
+        description: "Error message if the run failed. NULL on success."
+      - name: expected_question_understanding
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: actual_question_understanding
+        description: "Judge rubric score 1-3. NULL on error."
+      - name: question_understanding_abs_error
+        description: "ABS(expected - actual). NULL when either side is missing."
+      - name: expected_resource_exhaustion
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: actual_resource_exhaustion
+        description: "Judge rubric score 1-3. NULL on error."
+      - name: resource_exhaustion_abs_error
+        description: "ABS(expected - actual). NULL when either side is missing."
+      - name: expected_answer_grounding
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: actual_answer_grounding
+        description: "Judge rubric score 1-3. NULL on error."
+      - name: answer_grounding_abs_error
+        description: "ABS(expected - actual). NULL when either side is missing."
+      - name: expected_actionability
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: actual_actionability
+        description: "Judge rubric score 1-3. NULL on error."
+      - name: actionability_abs_error
+        description: "ABS(expected - actual). NULL when either side is missing."
+      - name: char_count
+        description: "Character count of the conversation content fed to the judge. NULL on error."
+
+  - name: fct_concept_drift
+    description: >
+      One row per (validation_run_id, prompt_version) — the judge-vs-human agreement time series
+      and the project's concept-drift signal. Holding the golden set and prompt_version fixed, a
+      drop in outcome_agreement_rate over time means the judge moved even though the prompt_version
+      hash did not rotate (e.g. the model behind the claude-sonnet-4-6 alias changed). Baseline is
+      the first run observed at each prompt_version; drift_band echoes the PSI 0.1/0.25 convention.
+    columns:
+      - name: validation_run_id
+        description: "Identifier of the validation run. Primary key with prompt_version."
+        tests:
+          - not_null
+      - name: prompt_version
+        description: "Classifier fingerprint. A new value starts a new drift baseline by design."
+        tests:
+          - not_null
+      - name: model_version
+        description: "Anthropic model used as judge for this run."
+      - name: prompt_hash
+        description: "Short SHA-256 of (model + prompt text)."
+      - name: run_at
+        description: "Timestamp of the validation run."
+        tests:
+          - not_null
+      - name: n_cases
+        description: "Non-blind, scored (error-free) cases in this run — the agreement denominator."
+      - name: n_passed
+        description: "Non-blind scored cases where the judge matched the human label."
+      - name: error_count
+        description: "Cases that failed classification (API/parse error). Excluded from agreement."
+      - name: n_blind_cases
+        description: "Blind, scored cases in this run."
+      - name: n_blind_passed
+        description: "Blind scored cases where the judge matched the human label."
+      - name: outcome_agreement_rate
+        description: "n_passed / n_cases. Headline judge-vs-human agreement. NULL if no scored non-blind cases."
+      - name: blind_agreement_rate
+        description: "Agreement on blind cases, reported separately from the headline."
+      - name: baseline_agreement_rate
+        description: "outcome_agreement_rate of the earliest run at this prompt_version."
+      - name: agreement_delta_vs_baseline
+        description: "outcome_agreement_rate - baseline_agreement_rate. Negative = drift down."
+      - name: drift_band
+        description: "stable (<0.10) / moderate (<0.25) / significant (>=0.25) / unknown — by |delta|."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['stable', 'moderate', 'significant', 'unknown']
+      - name: question_understanding_match_rate
+        description: "Exact-match rate on the question_understanding rubric. NULL until human rubric labels exist."
+      - name: question_understanding_mae
+        description: "Mean absolute error on question_understanding. NULL until human rubric labels exist."
+      - name: resource_exhaustion_match_rate
+        description: "Exact-match rate on resource_exhaustion. NULL until human rubric labels exist."
+      - name: resource_exhaustion_mae
+        description: "Mean absolute error on resource_exhaustion. NULL until human rubric labels exist."
+      - name: answer_grounding_match_rate
+        description: "Exact-match rate on answer_grounding. NULL until human rubric labels exist."
+      - name: answer_grounding_mae
+        description: "Mean absolute error on answer_grounding. NULL until human rubric labels exist."
+      - name: actionability_match_rate
+        description: "Exact-match rate on actionability. NULL until human rubric labels exist."
+      - name: actionability_mae
+        description: "Mean absolute error on actionability. NULL until human rubric labels exist."

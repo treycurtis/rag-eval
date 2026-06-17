@@ -19,3 +19,4 @@ rag_eval/logs/
 connect_querybot_postgres.sh
 *.duckdb
 classifiers/*.json
+validation_results.json

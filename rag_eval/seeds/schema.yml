@@ -1,0 +1,62 @@
+version: 2
+
+seeds:
+  - name: validation_labels
+    description: >
+      Human-assigned ground-truth labels for the consultation classifier golden set
+      (SEED_VALIDATION_LABELS). One row per (conversation_id, label_cohort). Labels are
+      assigned independently of the judge — expected_outcome is a human decision, never
+      seeded from classifier output. Re-scoring this fixed set over time detects JUDGE
+      drift (the model behind the claude-sonnet-4-6 alias changing); adding new
+      label_cohort values of fresh conversations detects DOMAIN concept drift.
+      Cohorts are immutable: append new cohorts, never retro-edit a label to match the judge.
+      Expected rubric scores are intentionally NULL in cohort_2026_06 — only human outcome
+      labels exist so far; independent rubric labels are a v2 labeling-session task.
+    columns:
+      - name: conversation_id
+        description: "Foreign key to STG_CONVERSATIONS. Unique within a label_cohort."
+        tests:
+          - not_null
+      - name: expected_outcome
+        description: "Human ground-truth outcome label. Independent of the judge."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values:
+                  - success_clean
+                  - success_with_correction
+                  - failure_knowledge_gap
+                  - failure_wrong_direction
+                  - failure_abandoned
+                  - inconclusive
+      - name: expected_question_understanding
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: expected_resource_exhaustion
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: expected_answer_grounding
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: expected_actionability
+        description: "Human rubric score 1-3. NULL until independently human-labeled (v2)."
+      - name: labeler
+        description: "Identifier of the human who assigned the label."
+        tests:
+          - not_null
+      - name: labeled_at
+        description: "Date the label was assigned."
+        tests:
+          - not_null
+      - name: label_cohort
+        description: "Immutable cohort identifier. Fixed cohort re-scored = judge drift; new cohort = domain drift."
+        tests:
+          - not_null
+      - name: is_blind
+        description: "TRUE if held out as a blind test case (excluded from headline agreement, reported separately)."
+        tests:
+          - not_null
+      - name: difficulty
+        description: "Labeling difficulty tag (easy/medium/hard). Boundary cases are the most sensitive drift detectors."
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['easy', 'medium', 'hard']

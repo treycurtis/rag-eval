@@ -151,3 +151,154 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     df["gate_decision"] = df["outcome"].apply(_gate_decision)
 
     return df
+
+
+# ── Concept-drift / validation layer ──────────────────────────────────────────
+# Mirrors the Grafana validation panels in Streamlit. The marts may not exist yet,
+# or may be too sparse to demo (a single validation run = a flat one-point line), so
+# these loaders auto-fall back to a synthetic series and the page can also force it.
+
+CONCEPT_DRIFT_TABLE = "RAG_EVAL.MARTS.FCT_CONCEPT_DRIFT"
+VALIDATION_RUNS_TABLE = "RAG_EVAL.MARTS.FCT_VALIDATION_RUNS"
+
+# Force demo data regardless of what's in Snowflake (handy for offline demos).
+USE_MOCK_DATA = os.environ.get("USE_MOCK_DATA", "").strip().lower() in ("1", "true", "yes")
+
+
+def _drift_band(delta: float) -> str:
+    """Same banding as fct_concept_drift (PSI 0.1/0.25 convention)."""
+    if pd.isna(delta):
+        return "unknown"
+    a = abs(delta)
+    if a < 0.10:
+        return "stable"
+    if a < 0.25:
+        return "moderate"
+    return "significant"
+
+
+def mock_concept_drift() -> pd.DataFrame:
+    """Synthetic agreement time series: a stable v1 with an injected dip, then a v2 rotation."""
+    base = pd.Timestamp.utcnow().normalize() - pd.Timedelta(weeks=11)
+
+    # (prompt_version, model, agreement) — v1 dips mid-series; v2 starts a fresh baseline.
+    series = [
+        ("consultation_3f302a86", "claude-sonnet-4-6", 1.00),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.95),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.90),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.92),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.80),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.70),  # significant drift dip
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.85),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.92),
+        ("consultation_3f302a86", "claude-sonnet-4-6", 0.95),
+        ("consultation_9bf21a04", "claude-sonnet-4-6", 0.83),  # version rotation → new baseline
+        ("consultation_9bf21a04", "claude-sonnet-4-6", 0.90),
+        ("consultation_9bf21a04", "claude-sonnet-4-6", 0.95),
+    ]
+
+    rows = []
+    baseline_by_version: dict[str, float] = {}
+    for i, (pv, model, agree) in enumerate(series):
+        baseline_by_version.setdefault(pv, agree)
+        baseline = baseline_by_version[pv]
+        delta = agree - baseline
+        n_cases = 5
+        n_passed = round(agree * n_cases)
+        # deterministic-ish rubric match rates that track agreement
+        rubric_match = min(1.0, agree + 0.05)
+        rubric_mae = round((1 - rubric_match) * 2, 3)
+        rows.append({
+            "validation_run_id": f"mock_run_{i:02d}",
+            "prompt_version": pv,
+            "model_version": model,
+            "prompt_hash": pv.split("_")[-1],
+            "run_at": base + pd.Timedelta(weeks=i),
+            "n_cases": n_cases,
+            "n_passed": n_passed,
+            "error_count": 1 if i == 5 else 0,
+            "n_blind_cases": 1,
+            "n_blind_passed": 0 if agree < 0.85 else 1,
+            "outcome_agreement_rate": agree,
+            "blind_agreement_rate": 0.0 if agree < 0.85 else 1.0,
+            "baseline_agreement_rate": baseline,
+            "agreement_delta_vs_baseline": round(delta, 3),
+            "drift_band": _drift_band(delta),
+            "question_understanding_match_rate": rubric_match,
+            "question_understanding_mae": rubric_mae,
+            "resource_exhaustion_match_rate": rubric_match,
+            "resource_exhaustion_mae": rubric_mae,
+            "answer_grounding_match_rate": rubric_match,
+            "answer_grounding_mae": rubric_mae,
+            "actionability_match_rate": rubric_match,
+            "actionability_mae": rubric_mae,
+        })
+    return pd.DataFrame(rows)
+
+
+def mock_validation_runs() -> pd.DataFrame:
+    """Synthetic latest-run case table for the pass/fail panel."""
+    cases = [
+        (530, "success_clean", "success_clean", False, False),
+        (643, "inconclusive", "inconclusive", False, False),
+        (691, "success_clean", "success_clean", False, False),
+        (701, "failure_abandoned", "failure_wrong_direction", False, False),
+        (225, "success_with_correction", None, False, True),   # error row
+        (724, "failure_knowledge_gap", "success_clean", True, False),  # blind
+    ]
+    run_at = pd.Timestamp.utcnow().normalize()
+    rows = []
+    for cid, exp, act, is_blind, is_err in cases:
+        rows.append({
+            "validation_run_id": "mock_run_11",
+            "run_at": run_at,
+            "conversation_id": cid,
+            "label_cohort": "cohort_2026_06",
+            "is_blind": is_blind,
+            "prompt_version": "consultation_9bf21a04",
+            "expected_outcome": exp,
+            "actual_outcome": act,
+            "outcome_passed": (act == exp),
+            "is_scored": not is_err,
+            "is_error": is_err,
+        })
+    return pd.DataFrame(rows)
+
+
+def _load_mart(table: str, order_by: str):
+    """Load a mart table lowercased, or raise to trigger mock fallback."""
+    conn = get_snowflake_connection()
+    try:
+        df = pd.read_sql(f"SELECT * FROM {table} ORDER BY {order_by}", conn)
+    finally:
+        conn.close()
+    df.columns = [c.lower() for c in df.columns]
+    return df
+
+
+@st.cache_data(ttl=600)
+def load_concept_drift() -> tuple[pd.DataFrame, bool]:
+    """Return (df, is_mock). Falls back to synthetic data if the mart is missing/empty."""
+    if USE_MOCK_DATA:
+        return mock_concept_drift(), True
+    try:
+        df = _load_mart(CONCEPT_DRIFT_TABLE, "run_at")
+        if df.empty:
+            return mock_concept_drift(), True
+        return df, False
+    except Exception:
+        return mock_concept_drift(), True
+
+
+@st.cache_data(ttl=600)
+def load_validation_runs() -> tuple[pd.DataFrame, bool]:
+    """Return (df, is_mock). Falls back to synthetic data if the mart is missing/empty."""
+    if USE_MOCK_DATA:
+        return mock_validation_runs(), True
+    try:
+        df = _load_mart(VALIDATION_RUNS_TABLE, "run_at")
+        if df.empty:
+            return mock_validation_runs(), True
+        return df, False
+    except Exception:
+        return mock_validation_runs(), True

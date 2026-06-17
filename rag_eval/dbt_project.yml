@@ -44,3 +44,21 @@ models:
       +materialized: table
       +database: rag_eval
       +schema: marts
+
+seeds:
+  rag_eval:
+    +database: rag_eval
+    +schema: seeds
+    validation_labels:
+      +column_types:
+        conversation_id: integer
+        expected_outcome: varchar
+        expected_question_understanding: integer
+        expected_resource_exhaustion: integer
+        expected_answer_grounding: integer
+        expected_actionability: integer
+        labeler: varchar
+        labeled_at: date
+        label_cohort: varchar
+        is_blind: boolean
+        difficulty: varchar

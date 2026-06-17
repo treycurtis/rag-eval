@@ -40,6 +40,20 @@ sources:
           Deduplicate on MAX(classified_at) per conversation before joining. Each row carries the
           classifier fingerprint: prompt_version (hash of model + prompt), model, and prompt_hash.
 
+  - name: validation_output
+    database: rag_eval
+    schema: staging
+    tables:
+      - name: int_validation_runs_raw
+        description: >
+          Append-only ledger of golden-set validation runs. Written by
+          validate_consultation_outcomes.py — one row per (validation_run_id, conversation_id).
+          Each row compares the judge's output against the human ground-truth label
+          (SEED_VALIDATION_LABELS) at the current prompt_version. Re-scoring the same fixed cohort
+          over time surfaces JUDGE drift (the model behind the alias changing). Carries
+          expected_outcome, actual_outcome, outcome_passed, per-dimension rubric scores + abs errors,
+          is_blind, label_cohort, and error (non-null for failed/unparseable classifications).
+
   - name: querybot
     database: rag_eval
     schema: querybot

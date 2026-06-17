@@ -1,281 +1,263 @@
+"""
+validate_consultation_outcomes.py — standing validation layer for the consultation classifier.
 
-import anthropic
-import json
-import os
-import re
-import snowflake.connector
-from pathlib import Path
+Re-scores a human-labeled golden set with the current judge and appends every run to an
+append-only Snowflake ledger (INT_VALIDATION_RUNS_RAW). Re-scoring the same fixed cohort over
+time surfaces JUDGE drift — the model behind the `claude-sonnet-4-6` alias changing — which the
+prompt_version hash cannot see (it only fingerprints OUR prompt + model string, not Anthropic's
+weights). Adding new label cohorts of fresh conversations surfaces DOMAIN concept drift.
 
+Ground truth comes from the dbt seed RAG_EVAL.SEEDS.VALIDATION_LABELS — never from classifier
+output — so judge-vs-human agreement is a real, independent signal. The judge call (prompt,
+model, prompt_version, prompt caching) is imported from run_consultation_classifier so there is
+exactly one source of truth for the scoring function.
 
-from dotenv import load_dotenv
-load_dotenv()
+Snowflake is the source of truth; a local JSON file is written as a convenience backup.
 
-# ── Snowflake connection ──────────────────────────────────────────────────────
-def get_snowflake_connection():
-    return snowflake.connector.connect(
-        account="ZADUWZC-QRC41354",
-        user="BUBCHAMPAGNE",
-        password=os.environ.get("SNOWFLAKE_PASSWORD"),
-        passcode=input("Enter Snowflake MFA code: "),
-        warehouse="DEV_WH",
-        database="RAG_EVAL",
-        schema="STAGING"
-    )
-
-# ── Fetch conversation thread from Snowflake ──────────────────────────────────
-def fetch_conversation(conn, conversation_id: int) -> str:
-    query = """
-        SELECT sequence_number, message_type, content
-        FROM STG_CONVERSATION_MESSAGES
-        WHERE conversation_id = %s
-        ORDER BY sequence_number
-    """
-    cursor = conn.cursor()
-    cursor.execute(query, (conversation_id,))
-    rows = cursor.fetchall()
-
-    TRUNCATION_LIMITS = {
-    "tool_result": 2000,
-    "thinking": None,   # never truncate — final response lives here
-    "tool_call": 500,   # just need to know what tool was called
-    "user": 2000,       # full user message usually matters
-}
-
-    lines = []
-    for _, msg_type, content in rows:
-        limit = TRUNCATION_LIMITS.get(msg_type)
-        if limit and content and len(content) > limit:
-            content = content[:limit] + "... [truncated]"
-        lines.append(f"[{msg_type}] {content or ''}")
-
-
-    return "\n\n".join(lines)
-
-# ── Prompt 2 ──────────────────────────────────────────────────────────────────
-PROMPT_2 = """
-You are evaluating conversations between a user and an AI assistant called querybot (also referred to by various names in conversation content — treat all references to the assistant as querybot regardless of what name the user uses). Querybot is a SQL assistant with access to a proprietary data warehouse schema, a memory system of past learnings, Confluence documentation, and Jira. It operates in a dev environment with no access to production data.
-
-Your job is to evaluate CONSULTATION conversations — conversations where querybot did not write a SQL file. The user's goal in these conversations is to get a correct, actionable answer to a question about the schema, data, business logic, or querybot's own capabilities. Success is not measured by whether SQL was produced — it is measured by whether the user got what they needed to move forward.
-
----
-
-## EVALUATION DIMENSIONS
-
-Score each dimension 1-3:
-
-**1. Question Understanding**
-Did querybot correctly interpret what the user was asking?
-1 = Misunderstood the question or went in a clearly wrong direction
-2 = Partially understood, required significant redirection
-3 = Correctly understood the question from the start, or self-corrected quickly when redirected
-
-**2. Resource Exhaustion**
-Did querybot use the available tools appropriately before concluding?
-1 = Gave up too early, missed obvious sources to check
-2 = Used some tools but missed meaningful avenues
-3 = Thoroughly searched schema, memory, Confluence, and/or executed validation queries before concluding
-
-**3. Answer Grounding**
-Was the conclusion supported by evidence from actual query results, schema documentation, or Confluence?
-1 = Conclusion was vague, speculative, or unsupported
-2 = Partially grounded, some evidence but gaps or contradictions
-3 = Conclusion was clearly grounded in evidence — cited actual table names, field values, query results, or documentation
-
-**4. Actionability**
-Could the user act on querybot's response?
-1 = User left with nothing — no answer, no direction, no next step
-2 = User got partial information but would need significant follow-up to move forward
-3 = User got a complete, actionable response — either a correct answer, a confirmed dead end with explanation, or a clear next step
-
----
-
-## OUTCOME CLASSIFICATION
-
-Based on the four dimensions, assign one of the following outcome labels:
-
-**success_clean** — querybot correctly understood the question, used appropriate tools, grounded its answer in evidence, and gave the user something actionable. Scores mostly 3s. Includes cases where the honest answer is "this data doesn't exist" — a well-researched definitive dead end is a success.
-
-**success_with_correction** — querybot initially went in a wrong direction but self-corrected when redirected by the user, and ultimately delivered an actionable response. At least one dimension scored 2 but the final answer was solid.
-
-**failure_knowledge_gap** — querybot searched thoroughly and in good faith but the schema, documentation, and memory system did not contain enough information to answer the question. Querybot correctly identified the gap. Not querybot's fault — the knowledge simply wasn't available.
-
-**failure_wrong_direction** — querybot misunderstood the question or pursued a clearly wrong approach without self-correcting, and the user did not get what they needed.
-
-**failure_abandoned** — the conversation ended before querybot could complete its work — either the user stopped responding, querybot hit infrastructure failures it couldn't recover from, or the session ended prematurely. Distinct from knowledge gap — the failure was process not content.
-
-**inconclusive** — the conversation is too short, too ambiguous, or too clearly a test/diagnostic session to evaluate meaningfully. Use for conversations like "test test", "can you give me a quick test of your functionality", or single-message exchanges with no substantive response.
-
----
-
-## FEW-SHOT EXAMPLES
-
-### Example 1 — success_with_correction
-User asked for a comprehensive analysis of Smart Arming's impact on customer engagement and retention, including survival analysis, pre/post engagement comparison, and customer profiling. Querybot built a full research and analysis plan, searched schema and Confluence, identified the correct tables, wrote multiple SQL files and Python scripts. When the user pointed out that Smart Arming is an automation not a notification, querybot immediately searched Confluence, confirmed the correction, and updated all deliverables accordingly.
-
-Scores: Question Understanding 3, Resource Exhaustion 3, Answer Grounding 3, Actionability 3
-Outcome: success_with_correction (initial misclassification corrected cleanly)
-
-### Example 2 — success_clean (definitive dead end)
-User asked to audit which customers were created manually vs via API/webservices. Querybot searched every plausible field across lu_customer, S_CUSTOMER_SOURCE, lu_system_access_source, lu_dealer_customer_source, and Confluence. Confluence confirmed there is no single universal flag for manual vs API creation. Querybot explained this clearly and described what the candidate fields actually represent. The user got a definitive, well-researched answer — the data doesn't exist in this form — which is exactly what they needed before building on a false assumption.
-
-Scores: Question Understanding 3, Resource Exhaustion 3, Answer Grounding 3, Actionability 3
-Outcome: success_clean
-
-### Example 3 — inconclusive
-User sent "test test" with no follow-up. No substantive exchange occurred.
-
-Scores: N/A
-Outcome: inconclusive
-
-### Example 4 — failure_abandoned
-User asked querybot to find tables related to Mobile Surveillance Trailers. Querybot searched schema, memory, and documentation but hit a SQL role permission error that blocked live queries. No matches were found in documentation. Querybot correctly reported the blocker but the user had no path forward — querybot couldn't execute the queries needed to complete the search and the session ended.
-
-Scores: Question Understanding 3, Resource Exhaustion 2, Answer Grounding 2, Actionability 1
-Outcome: failure_abandoned
-
-### Example 5 — success_clean (short conversation)
-User pasted a complex multi-CTE query and asked what three specific sections were doing. Querybot gave a thorough, accurate breakdown of each section with clear explanations of the currency normalization logic, filtering, and territory renaming. Two turns, definitively answered.
-
-Scores: Question Understanding 3, Resource Exhaustion 3, Answer Grounding 3, Actionability 3
-Outcome: success_clean
-
----
-
-## IMPORTANT NOTES
-
-- The final user-facing response is the last `thinking` message in the conversation. Earlier `thinking` messages may be internal reasoning. Evaluate the full arc of the conversation but weight the final response heavily for actionability scoring.
-- Querybot operates in a dev environment. Sparse or missing data in query results is expected and does not indicate a failure — querybot should note this and proceed accordingly.
-- A short conversation is not automatically inconclusive. If the question was answered correctly and completely in 2 turns, score it as success_clean.
-- Infrastructure failures (SQL role not selected, Python executor unreachable, Confluence credentials not configured) that block querybot from completing its work should be scored as failure_abandoned, not failure_knowledge_gap.
-
----
-
-## OUTPUT FORMAT
-
-Respond only with valid JSON. No preamble, no explanation outside the JSON.
-
-{
-  "question_understanding": <1|2|3>,
-  "resource_exhaustion": <1|2|3>,
-  "answer_grounding": <1|2|3>,
-  "actionability": <1|2|3>,
-  "outcome": "<success_clean|success_with_correction|failure_knowledge_gap|failure_wrong_direction|failure_abandoned|inconclusive>",
-  "reasoning": "<2-3 sentences explaining the outcome label>"
-}
-
----
-
-## CONVERSATION TO EVALUATE
-
-{conversation_content}
+Usage (from repo root, with the project venv active):
+    python classifiers/validate_consultation_outcomes.py
 """
 
-# Truncate long conversations while preserving key context
-def truncate_conversation(content: str, max_chars: int = 30000) -> str:
-    if len(content) <= max_chars:
-        return content
-    keep_start = 20000
-    keep_end = 10000
-    middle_msg = f"\n\n... [{len(content) - keep_start - keep_end} chars truncated] ...\n\n"
-    return content[:keep_start] + middle_msg + content[-keep_end:]
+import json
+import os
+import sys
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 
-# ── Claude API call ───────────────────────────────────────────────────────────
-def classify_conversation(conversation_content: str) -> dict:
-    client = anthropic.Anthropic()
-    prompt = PROMPT_2.replace("{conversation_content}", conversation_content)
-    
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+# ── Make the classifier module importable regardless of how this script is invoked ──
+# repo root → so `metrics` (imported transitively by the classifier) resolves;
+# this dir → so `run_consultation_classifier` resolves.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-    raw = response.content[0].text.strip()
-    raw = re.sub(r"```json|```", "", raw).strip()
-    result = json.loads(raw)
-    
-    if not result.get("outcome"):
-        raise ValueError(f"Missing outcome field in response: {raw}")
-    
-    return result
+# Reuse the exact scoring function (prompt, model, version, prompt caching, retries) and the
+# key-pair Snowflake connection. Do NOT duplicate the prompt here — a divergent copy would make
+# this validate a different judge than the one in production.
+from run_consultation_classifier import (  # noqa: E402
+    MODEL,
+    PROMPT_HASH,
+    PROMPT_VERSION,
+    classify_with_retry,
+    fetch_conversation,
+    get_snowflake_connection,
+    truncate_conversation,
+)
 
-# ── Validation cases ──────────────────────────────────────────────────────────
-VALIDATION_CASES = [
-    {"conversation_id": 643, "expected_outcome": "inconclusive"},
-    {"conversation_id": 691, "expected_outcome": "success_clean"},
-    {"conversation_id": 701, "expected_outcome": "failure_abandoned"},
-    {"conversation_id": 530, "expected_outcome": "success_clean"},
-    {"conversation_id": 225, "expected_outcome": "success_with_correction"},
-]
+# Rubric dimensions scored 1-3 by the judge and (eventually) by humans.
+RUBRIC_DIMENSIONS = (
+    "question_understanding",
+    "resource_exhaustion",
+    "answer_grounding",
+    "actionability",
+)
 
-BLIND_TEST_CASES = [
-    {"conversation_id": 724, "expected_outcome": "success_clean"},
-]
+SEED_LABELS_TABLE = "RAG_EVAL.SEEDS.VALIDATION_LABELS"
+LEDGER_TABLE = "INT_VALIDATION_RUNS_RAW"  # written to the connection's default schema (STAGING)
 
-# ── Validation runner ─────────────────────────────────────────────────────────
+
+# ── Ground truth: read the human-labeled golden set from the dbt seed ─────────
+def fetch_validation_labels(conn) -> list[dict]:
+    """Load human ground-truth labels. Independent of the judge by construction."""
+    query = f"""
+        SELECT
+            conversation_id,
+            expected_outcome,
+            expected_question_understanding,
+            expected_resource_exhaustion,
+            expected_answer_grounding,
+            expected_actionability,
+            label_cohort,
+            is_blind
+        FROM {SEED_LABELS_TABLE}
+        ORDER BY conversation_id
+    """
+    cursor = conn.cursor()
+    cursor.execute(query)
+    cols = [c[0].lower() for c in cursor.description]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+# ── Append-only ledger ────────────────────────────────────────────────────────
+def ensure_validation_table(conn):
+    """Create the append-only validation ledger if it does not exist.
+
+    Mirrors the INT_CONVERSATION_OUTCOMES_RAW pattern: one row per (validation_run_id,
+    conversation_id). Never updated in place — history is what makes drift observable.
+    """
+    cursor = conn.cursor()
+    cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {LEDGER_TABLE} (
+            validation_run_id                       VARCHAR,
+            run_at                                  TIMESTAMP_TZ,
+            conversation_id                         INTEGER,
+            label_cohort                            VARCHAR,
+            is_blind                                BOOLEAN,
+            prompt_version                          VARCHAR,
+            model                                   VARCHAR,
+            prompt_hash                             VARCHAR,
+            expected_outcome                        VARCHAR,
+            actual_outcome                          VARCHAR,
+            outcome_passed                          BOOLEAN,
+            expected_question_understanding         INTEGER,
+            actual_question_understanding           INTEGER,
+            question_understanding_abs_error        INTEGER,
+            expected_resource_exhaustion            INTEGER,
+            actual_resource_exhaustion              INTEGER,
+            resource_exhaustion_abs_error           INTEGER,
+            expected_answer_grounding               INTEGER,
+            actual_answer_grounding                 INTEGER,
+            answer_grounding_abs_error              INTEGER,
+            expected_actionability                  INTEGER,
+            actual_actionability                    INTEGER,
+            actionability_abs_error                 INTEGER,
+            char_count                              INTEGER,
+            error                                   VARCHAR
+        )
+    """)
+    conn.commit()
+
+
+def write_validation_results(conn, results: list[dict]):
+    """Append one run's results to the ledger. Mirrors write_results() in the classifier."""
+    ensure_validation_table(conn)
+    cursor = conn.cursor()
+
+    insert_sql = f"""
+        INSERT INTO {LEDGER_TABLE} (
+            validation_run_id, run_at, conversation_id, label_cohort, is_blind,
+            prompt_version, model, prompt_hash,
+            expected_outcome, actual_outcome, outcome_passed,
+            expected_question_understanding, actual_question_understanding, question_understanding_abs_error,
+            expected_resource_exhaustion, actual_resource_exhaustion, resource_exhaustion_abs_error,
+            expected_answer_grounding, actual_answer_grounding, answer_grounding_abs_error,
+            expected_actionability, actual_actionability, actionability_abs_error,
+            char_count, error
+        ) VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s, %s,
+            %s, %s
+        )
+    """
+
+    rows = []
+    for r in results:
+        rows.append((
+            r["validation_run_id"], r["run_at"], r["conversation_id"],
+            r["label_cohort"], r["is_blind"],
+            PROMPT_VERSION, MODEL, PROMPT_HASH,
+            r["expected_outcome"], r["actual_outcome"], r["outcome_passed"],
+            r["expected_question_understanding"], r["actual_question_understanding"], r["question_understanding_abs_error"],
+            r["expected_resource_exhaustion"], r["actual_resource_exhaustion"], r["resource_exhaustion_abs_error"],
+            r["expected_answer_grounding"], r["actual_answer_grounding"], r["answer_grounding_abs_error"],
+            r["expected_actionability"], r["actual_actionability"], r["actionability_abs_error"],
+            r["char_count"], r["error"],
+        ))
+
+    cursor.executemany(insert_sql, rows)
+    conn.commit()
+    print(f"Wrote {len(rows)} rows to {LEDGER_TABLE}")
+
+
+def _abs_error(expected, actual):
+    """Absolute rubric error, or None if either side is missing (no independent label yet)."""
+    if expected is None or actual is None:
+        return None
+    return abs(int(expected) - int(actual))
+
+
+# ── Validation run ────────────────────────────────────────────────────────────
 def run_validation(output_path: str = "validation_results.json"):
+    validation_run_id = uuid.uuid4().hex
+    run_at = datetime.now(timezone.utc)
+
     conn = get_snowflake_connection()
-    results = []
-    all_cases = VALIDATION_CASES + BLIND_TEST_CASES
+    try:
+        labels = fetch_validation_labels(conn)
+        print(f"Validation run {validation_run_id} — {len(labels)} golden cases "
+              f"(prompt_version={PROMPT_VERSION})\n")
 
-    for case in all_cases:
-        conv_id = case["conversation_id"]
-        expected = case["expected_outcome"]
-        is_blind = case in BLIND_TEST_CASES
+        results = []
+        for case in labels:
+            conv_id = case["conversation_id"]
+            expected = case["expected_outcome"]
+            is_blind = bool(case["is_blind"])
+            tag = " [BLIND]" if is_blind else ""
+            print(f"Classifying conversation {conv_id}{tag}...")
 
-        print(f"Classifying conversation {conv_id} {'[BLIND]' if is_blind else ''}...")
-
-        try:
-            conversation_content = fetch_conversation(conn, conv_id)
-            print(f"  Conv {conv_id}: {len(conversation_content):,} chars")
-
-            classification = classify_conversation(conversation_content)
-
-            actual = classification.get("outcome")
-            passed = actual == expected
-
-            result = {
+            base = {
+                "validation_run_id": validation_run_id,
+                "run_at": run_at,
                 "conversation_id": conv_id,
+                "label_cohort": case["label_cohort"],
+                "is_blind": is_blind,
                 "expected_outcome": expected,
-                "actual_outcome": actual,
-                "passed": passed,
-                "is_blind_test": is_blind,
-                **classification
             }
+            for dim in RUBRIC_DIMENSIONS:
+                base[f"expected_{dim}"] = case[f"expected_{dim}"]
 
-            status = "✅ PASS" if passed else "❌ FAIL"
-            print(f"  {status} — expected: {expected}, got: {actual}")
-            print(f"  Reasoning: {classification.get('reasoning')}")
-            print()
+            try:
+                content = fetch_conversation(conn, conv_id)
+                classification = classify_with_retry(truncate_conversation(content))
 
-        except Exception as e:
-            print(f"  ⚠️  Error: {e}")
-            result = {
-                "conversation_id": conv_id,
-                "expected_outcome": expected,
-                "actual_outcome": None,
-                "passed": False,
-                "is_blind_test": is_blind,
-                "error": str(e)
-            }
+                actual = classification.get("outcome")
+                result = {
+                    **base,
+                    "actual_outcome": actual,
+                    "outcome_passed": actual == expected,
+                    "char_count": len(content),
+                    "error": None,
+                }
+                for dim in RUBRIC_DIMENSIONS:
+                    actual_score = classification.get(dim)
+                    result[f"actual_{dim}"] = actual_score
+                    result[f"{dim}_abs_error"] = _abs_error(case[f"expected_{dim}"], actual_score)
 
-        results.append(result)
+                status = "✅ PASS" if result["outcome_passed"] else "❌ FAIL"
+                print(f"  {status} — expected: {expected}, got: {actual}")
 
-    conn.close()
+            except Exception as e:  # noqa: BLE001 — record failures in the ledger, don't abort the run
+                print(f"  ⚠️  Error: {e}")
+                result = {
+                    **base,
+                    "actual_outcome": None,
+                    "outcome_passed": False,
+                    "char_count": None,
+                    "error": str(e),
+                }
+                for dim in RUBRIC_DIMENSIONS:
+                    result[f"actual_{dim}"] = None
+                    result[f"{dim}_abs_error"] = None
 
-    output = Path(output_path)
-    output.write_text(json.dumps(results, indent=2))
-    print(f"Results written to {output_path}")
+            results.append(result)
 
-    passed_count = sum(1 for r in results if r["passed"] and not r["is_blind_test"])
-    total = len(VALIDATION_CASES)
-    print(f"\nValidation: {passed_count}/{total} passed")
+        write_validation_results(conn, results)
+    finally:
+        conn.close()
 
-    for b in [r for r in results if r["is_blind_test"]]:
-        status = "✅" if b["passed"] else "❌"
-        print(f"Blind test {b['conversation_id']}: {status} ({b['actual_outcome']})")
+    # Local JSON backup (convenience only — Snowflake is the source of truth).
+    serializable = [{**r, "run_at": r["run_at"].isoformat()} for r in results]
+    Path(output_path).write_text(json.dumps(serializable, indent=2))
+    print(f"\nLocal backup written to {output_path}")
+
+    # Headline agreement excludes blind cases; blind cases reported separately.
+    scored = [r for r in results if not r["is_blind"]]
+    passed = sum(1 for r in scored if r["outcome_passed"])
+    print(f"\nOutcome agreement (non-blind): {passed}/{len(scored)}")
+    for b in [r for r in results if r["is_blind"]]:
+        mark = "✅" if b["outcome_passed"] else "❌"
+        print(f"Blind {b['conversation_id']}: {mark} expected {b['expected_outcome']}, got {b['actual_outcome']}")
 
     return results
+
 
 if __name__ == "__main__":
     run_validation()

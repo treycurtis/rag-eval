@@ -20,7 +20,9 @@ from data_loader import (
     RUBRIC_DIMENSIONS,
     add_derived_columns,
     has_cost_columns,
+    load_concept_drift,
     load_outcomes,
+    load_validation_runs,
     resolve_time_axis,
 )
 
@@ -34,7 +36,7 @@ has_cost = has_cost_columns(df)
 st.sidebar.title("Turkle Quality Signal")
 page = st.sidebar.radio(
     "View",
-    ["Overview", "Trends", "Outliers & Drift", "Gate Simulator", "Conversation Explorer"],
+    ["Overview", "Trends", "Outliers & Drift", "Concept Drift", "Gate Simulator", "Conversation Explorer"],
 )
 st.sidebar.divider()
 st.sidebar.caption(f"{len(df)} classified conversations")
@@ -339,6 +341,142 @@ elif page == "Outliers & Drift":
         fig.update_layout(yaxis_tickformat=".0%", yaxis_title="Recent − baseline share")
         st.plotly_chart(fig, use_container_width=True)
         st.caption(f"'Recent' = last {n_recent} conversations by {time_col}.")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# CONCEPT DRIFT
+# ════════════════════════════════════════════════════════════════════════════
+elif page == "Concept Drift":
+    st.title("Concept Drift — Judge vs Human Agreement")
+    st.caption(
+        "Mirrors the Grafana validation panels. Holding the golden set and prompt_version "
+        "fixed, a drop in judge-vs-human agreement means the judge moved — even when the "
+        "prompt_version hash didn't rotate (e.g. the model behind the alias changed)."
+    )
+
+    drift_real, drift_is_mock = load_concept_drift()
+    runs_real, runs_is_mock = load_validation_runs()
+
+    real_runs = 0 if drift_is_mock else drift_real["validation_run_id"].nunique()
+    sparse = drift_is_mock or real_runs < 3
+    demo = st.toggle(
+        "Demo data",
+        value=sparse,
+        help="Use a synthetic drift series. Auto-on when real validation history is sparse "
+             "(fewer than 3 runs) so the time-series panels are meaningful to demo.",
+    )
+
+    if demo:
+        from data_loader import mock_concept_drift, mock_validation_runs
+        drift_df, runs_df = mock_concept_drift(), mock_validation_runs()
+    else:
+        drift_df, runs_df = drift_real, runs_real
+
+    if demo or drift_is_mock:
+        st.warning(
+            "⚠️ DEMO DATA — synthetic drift series for demonstration, not real validation runs.",
+            icon="⚠️",
+        )
+
+    drift_df = drift_df.sort_values("run_at")
+    latest = drift_df.iloc[-1]
+
+    # ── Latest-run stat tiles ────────────────────────────────────────────────
+    band_emoji = {"stable": "🟢", "moderate": "🟡", "significant": "🔴", "unknown": "⚪"}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Outcome agreement (latest)", f"{latest['outcome_agreement_rate']:.0%}")
+    c2.metric(
+        "Δ vs baseline",
+        f"{latest['agreement_delta_vs_baseline']:+.0%}",
+        help="Change in agreement vs the first run at this prompt_version.",
+    )
+    c3.metric("Drift band", f"{band_emoji.get(latest['drift_band'], '')} {latest['drift_band']}")
+    c4.metric("Errors (latest run)", int(latest["error_count"]))
+
+    st.divider()
+
+    # ── Agreement over time, per prompt_version ──────────────────────────────
+    st.subheader("Agreement Over Time")
+    st.caption("One line per prompt_version. A version rotation starts a fresh baseline by design.")
+    fig = px.line(
+        drift_df,
+        x="run_at",
+        y="outcome_agreement_rate",
+        color="prompt_version",
+        markers=True,
+        range_y=[0, 1.02],
+    )
+    fig.update_layout(yaxis_tickformat=".0%", xaxis_title="Run", yaxis_title="Outcome agreement")
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Drift delta bars + blind split ───────────────────────────────────────
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Drift vs Baseline")
+        drift_df = drift_df.copy()
+        drift_df["_band_color"] = drift_df["agreement_delta_vs_baseline"]
+        fig = px.bar(
+            drift_df,
+            x="run_at",
+            y="agreement_delta_vs_baseline",
+            color="_band_color",
+            color_continuous_scale=["red", "lightgray", "green"],
+            range_color=[-0.3, 0.3],
+        )
+        fig.update_layout(
+            yaxis_tickformat=".0%",
+            yaxis_title="Agreement − baseline",
+            xaxis_title="Run",
+            coloraxis_showscale=False,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        st.subheader("Blind vs Non-Blind (latest run)")
+        nonblind = latest["outcome_agreement_rate"]
+        blind = latest.get("blind_agreement_rate")
+        split = pd.DataFrame({
+            "set": ["non-blind (headline)", "blind (held out)"],
+            "agreement": [nonblind, blind if pd.notna(blind) else 0.0],
+        })
+        fig = px.bar(split, x="set", y="agreement", range_y=[0, 1.02], color="set")
+        fig.update_layout(yaxis_tickformat=".0%", showlegend=False, xaxis_title="", yaxis_title="Agreement")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # ── Per-dimension rubric exact-match ─────────────────────────────────────
+    st.subheader("Rubric Exact-Match by Dimension (latest run)")
+    match_cols = [f"{d}_match_rate" for d in RUBRIC_DIMENSIONS]
+    if all(c in drift_df.columns for c in match_cols) and latest[match_cols].notna().any():
+        rubric = pd.DataFrame({
+            "dimension": RUBRIC_DIMENSIONS,
+            "match_rate": [latest[c] for c in match_cols],
+        })
+        fig = px.bar(rubric, x="dimension", y="match_rate", range_y=[0, 1.02])
+        fig.update_layout(yaxis_tickformat=".0%", yaxis_title="Exact-match rate")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info(
+            "Per-dimension rubric agreement is empty — expected rubric scores are only "
+            "populated once humans label them independently (v2). Outcome agreement above "
+            "is the live v1 signal."
+        )
+
+    st.divider()
+
+    # ── Latest-run case table ────────────────────────────────────────────────
+    st.subheader("Latest Run — Case-by-Case")
+    if "validation_run_id" in runs_df.columns and not runs_df.empty:
+        latest_run_id = runs_df.sort_values("run_at")["validation_run_id"].iloc[-1]
+        cases = runs_df[runs_df["validation_run_id"] == latest_run_id]
+        show_cols = [c for c in [
+            "conversation_id", "is_blind", "expected_outcome", "actual_outcome",
+            "outcome_passed", "is_error",
+        ] if c in cases.columns]
+        st.dataframe(cases[show_cols], use_container_width=True, hide_index=True)
+    else:
+        st.info("No validation-run detail available.")
 
 
 # ════════════════════════════════════════════════════════════════════════════

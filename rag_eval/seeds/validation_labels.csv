@@ -1,0 +1,7 @@
+conversation_id,expected_outcome,expected_question_understanding,expected_resource_exhaustion,expected_answer_grounding,expected_actionability,labeler,labeled_at,label_cohort,is_blind,difficulty
+643,inconclusive,,,,,trey,2026-06-17,cohort_2026_06,false,easy
+691,success_clean,,,,,trey,2026-06-17,cohort_2026_06,false,easy
+701,failure_abandoned,,,,,trey,2026-06-17,cohort_2026_06,false,medium
+530,success_clean,,,,,trey,2026-06-17,cohort_2026_06,false,easy
+225,success_with_correction,,,,,trey,2026-06-17,cohort_2026_06,false,medium
+724,failure_knowledge_gap,,,,,trey,2026-06-17,cohort_2026_06,true,hard
