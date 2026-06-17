@@ -31,6 +31,9 @@ latest_outcomes AS (
         flag_dev_acknowledged,
         reasoning,
         char_count,
+        prompt_version,
+        model                               AS model_version,
+        prompt_hash,
         classified_at
     FROM (
         SELECT
@@ -53,6 +56,11 @@ SELECT
     lo.outcome,
     lo.classified_as_type,
     lo.classified_at,
+
+    -- classifier version / model lineage (NULL if not classified)
+    lo.prompt_version,
+    lo.model_version,
+    lo.prompt_hash,
 
     -- rubric scores (NULL if not classified or inconclusive)
     CASE WHEN lo.outcome IS NULL
@@ -97,6 +105,9 @@ SELECT
 
     -- corpus era
     m.corpus_era,
+
+    -- conversation creation date
+    m.conversation_created_at,
 
     -- schema discovery
     m.prefetch_call_count,

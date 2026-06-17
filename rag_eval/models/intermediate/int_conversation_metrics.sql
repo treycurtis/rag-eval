@@ -206,6 +206,8 @@ SELECT
     -- tool errors
     COALESCE(te.tool_use_error_count, 0)                   AS tool_use_error_count,
     COALESCE(te.codebase_error_count, 0)                   AS codebase_error_count,
+    c.created_at                                           AS conversation_created_at,
+
     CASE
         WHEN c.created_at < '2026-03-01' THEN 'pre_prefetch'
         ELSE 'post_prefetch'

@@ -37,7 +37,8 @@ sources:
         description: >
           Raw classifier output. Written by Python classifier scripts (run_consultation_classifier.py,
           run_sql_output_classifier.py). One row per classification run — not unique on conversation_id.
-          Deduplicate on MAX(classified_at) per conversation before joining.
+          Deduplicate on MAX(classified_at) per conversation before joining. Each row carries the
+          classifier fingerprint: prompt_version (hash of model + prompt), model, and prompt_hash.
 
   - name: querybot
     database: rag_eval

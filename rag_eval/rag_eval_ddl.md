@@ -119,6 +119,7 @@ One row per conversation. Rolled-up behavioral signals for use in classification
 | `stale_doc_warning_count` | INTEGER | Number of stale documentation warnings surfaced by the schema tool. |
 | `tool_use_error_count` | INTEGER | Number of tool calls where `is_error = TRUE` (MCP layer failures). |
 | `codebase_error_count` | INTEGER | Number of codebase-related errors encountered. |
+| `conversation_created_at` | TIMESTAMP_NTZ | When the conversation was initiated. Pass-through from `STG_CONVERSATIONS.created_at`. Used as the time axis for trend analysis. |
 | `corpus_era` | VARCHAR | `pre_prefetch` or `post_prefetch` — indicates whether schema_prefetch tooling was available when the conversation occurred. |
 | `user_rejected_tool_count` | INTEGER | Number of tool calls rejected by the user (surfaces via `%tool use was rejected%` in `tool_result` content). |
 | `total_cost_usd` | FLOAT | Sum of `cost_usd` from `STG_CONVERSATION_RUNS`. |
@@ -240,6 +241,7 @@ Final quality layer. One row per classifiable conversation (generation, modifica
 | `total_duration_ms` | INTEGER | Sum of all run durations in milliseconds. |
 | `avg_run_duration_ms` | FLOAT | Average run duration in milliseconds. |
 | `corpus_era` | VARCHAR | `pre_prefetch` or `post_prefetch`. |
+| `conversation_created_at` | TIMESTAMP_NTZ | When the conversation was initiated. Pass-through from `STG_CONVERSATIONS.created_at`. Used as the time axis for trend analysis. |
 | `prefetch_call_count` | INTEGER | Number of schema_prefetch tool calls. |
 | `first_prefetch_sequence` | INTEGER | Sequence number of first schema_prefetch call. |
 | `sql_write_count` | INTEGER | Number of SQL files written. |

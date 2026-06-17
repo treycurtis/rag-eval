@@ -12,6 +12,7 @@
 
 
 import anthropic
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,9 @@ from datetime import datetime, timezone
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
+from metrics.metrics import CLASSIFIER_RETRIES_TOTAL
+from metrics.instrumented import instrumented_classify
+from metrics.server import start_metrics_server
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -49,24 +53,52 @@ def get_snowflake_connection():
         schema="STAGING"
     )
 
+# ── Classifier identity (model + prompt) ──────────────────────────────────
+# MODEL is the judge. PROMPT_VERSION is derived (below, after PROMPT_1) from a
+# hash of (MODEL + PROMPT_1), so ANY change to the model or the prompt
+# automatically rotates the version and triggers a full reclassification. Pure
+# plumbing changes leave it untouched, so reruns stay incremental. Never
+# hand-edit the version.
+MODEL = "claude-sonnet-4-6"
+
+# ── Ensure outcomes table / version columns exist ───────────────────────────
+def ensure_outcomes_table(conn):
+    cursor = conn.cursor()
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS prompt_version VARCHAR
+    """)
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS model VARCHAR
+    """)
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS prompt_hash VARCHAR
+    """)
+    conn.commit()
+
 # ── Fetch SQL output conversation IDs ─────────────────────────────────────────
 
 # Fetch converations that hit retry limit
 # def fetch_sql_output_ids(conn) -> list[int]:
 #     return [19, 210, 609, 633]
 
-def fetch_sql_output_ids(conn) -> list[int]:
+def fetch_sql_output_ids(conn, prompt_version: str | None = None) -> list[int]:
+    prompt_version = prompt_version or PROMPT_VERSION
     query = """
         SELECT t.conversation_id
         FROM INT_CONVERSATION_TYPE t
         WHERE t.conversation_type IN ('generation', 'modification')
           AND t.conversation_id NOT IN (
               SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
+              WHERE prompt_version = %s
+                AND error IS NULL
           )
         ORDER BY t.conversation_id
     """
     cursor = conn.cursor()
-    cursor.execute(query)
+    cursor.execute(query, (prompt_version,))
     rows = cursor.fetchall()
     return [row[0] for row in rows]
 
@@ -240,6 +272,14 @@ Respond only with valid JSON. No preamble, no explanation outside the JSON.
 {conversation_content}
 """
 
+# Static rubric prefix (everything before the variable conversation content).
+# Identical on every call, so it is sent as a cacheable prompt block.
+PROMPT_1_PREFIX = PROMPT_1.split("{conversation_content}")[0]
+
+# Scoring fingerprint: any change to MODEL or PROMPT_1 rotates the version.
+PROMPT_HASH = hashlib.sha256(f"{MODEL}\n{PROMPT_1}".encode()).hexdigest()[:8]
+PROMPT_VERSION = f"sql_output_{PROMPT_HASH}"
+
 # ── Truncate long conversations while preserving key context ──────────────────
 def truncate_conversation(content: str, max_chars: int = 30000) -> str:
     if len(content) <= max_chars:
@@ -260,12 +300,13 @@ def truncate_conversation(content: str, max_chars: int = 30000) -> str:
 
 
 # ── Wrapper to handle rate limits with exponential backoff ────────────────────
-def classify_with_retry(conversation_content: str, max_retries: int = 3) -> dict:
+def classify_with_retry(conversation_content: str, conversation_type: str, max_retries: int = 3) -> dict:
     for attempt in range(max_retries):
         try:
             return classify_conversation(conversation_content)
         except anthropic.RateLimitError:
             wait = 60 * (attempt + 1)
+            CLASSIFIER_RETRIES_TOTAL.labels(conversation_type=conversation_type).inc()
             print(f"  Rate limited — waiting {wait}s before retry...")
             time.sleep(wait)
     raise Exception(f"Failed after {max_retries} retries")
@@ -273,12 +314,24 @@ def classify_with_retry(conversation_content: str, max_retries: int = 3) -> dict
 # ── Claude API call ───────────────────────────────────────────────────────────
 def classify_conversation(conversation_content: str) -> dict:
     client = anthropic.Anthropic()
-    prompt = PROMPT_1.replace("{conversation_content}", conversation_content)
 
+    # Split into a cached static block (rubric + few-shot examples) and the
+    # variable conversation block. The cached prefix bills at ~10% of normal
+    # input tokens after the first hit.
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=MODEL,
         max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": PROMPT_1_PREFIX,
+                    "cache_control": {"type": "ephemeral"},
+                },
+                {"type": "text", "text": conversation_content},
+            ],
+        }],
     )
 
     raw = response.content[0].text.strip()
@@ -302,6 +355,18 @@ def write_results(conn, results: list[dict]):
         ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
         ADD COLUMN IF NOT EXISTS flag_dev_acknowledged BOOLEAN
     """)
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS prompt_version VARCHAR
+    """)
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS model VARCHAR
+    """)
+    cursor.execute("""
+        ALTER TABLE INT_CONVERSATION_OUTCOMES_RAW
+        ADD COLUMN IF NOT EXISTS prompt_hash VARCHAR
+    """)
 
     insert_sql = """
         INSERT INTO INT_CONVERSATION_OUTCOMES_RAW (
@@ -309,8 +374,9 @@ def write_results(conn, results: list[dict]):
             question_understanding, resource_exhaustion,
             answer_grounding, actionability,
             flag_dev_acknowledged,
-            reasoning, char_count, error, classified_at
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            reasoning, char_count, error,
+            prompt_version, model, prompt_hash, classified_at
+        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
 
     rows = []
@@ -327,6 +393,9 @@ def write_results(conn, results: list[dict]):
             r.get("reasoning"),
             r.get("char_count"),
             r.get("error"),
+            PROMPT_VERSION,
+            MODEL,
+            PROMPT_HASH,
             datetime.now(timezone.utc)
         ))
 
@@ -335,7 +404,9 @@ def write_results(conn, results: list[dict]):
     print(f"Wrote {len(rows)} rows to INT_CONVERSATION_OUTCOMES_RAW")
 
 # ── Full run ──────────────────────────────────────────────────────────────────
+
 def run_full_classification(backup_path: str = "sql_output_outcomes.json"):
+    start_metrics_server()
     conn = get_snowflake_connection()
     results = []
 
@@ -344,21 +415,30 @@ def run_full_classification(backup_path: str = "sql_output_outcomes.json"):
     #                  (609, 'generation'), (633, 'modification')]
 
     # Normal run — fetch from Snowflake
+    ensure_outcomes_table(conn)
     query = """
         SELECT t.conversation_id, t.conversation_type
         FROM INT_CONVERSATION_TYPE t
         WHERE t.conversation_type IN ('generation', 'modification')
           AND t.conversation_id NOT IN (
               SELECT conversation_id FROM INT_CONVERSATION_OUTCOMES_RAW
+              WHERE prompt_version = %s
+                AND error IS NULL
           )
         ORDER BY t.conversation_id
     """
     cursor = conn.cursor()
-    cursor.execute(query)
+    cursor.execute(query, (PROMPT_VERSION,))
     id_type_pairs = cursor.fetchall()
 
     total = len(id_type_pairs)
-    print(f"Found {total} SQL output conversations to classify\n")
+    print(f"Found {total} SQL output conversations to classify "
+          f"(prompt_version={PROMPT_VERSION})\n")
+
+    if total == 0:
+        print("Nothing new to classify — all SQL output conversations are up to date.")
+        conn.close()
+        return results
 
     print("Fetching conversation content...")
     conversations = {}
@@ -371,8 +451,10 @@ def run_full_classification(backup_path: str = "sql_output_outcomes.json"):
     with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
             executor.submit(
-                classify_with_retry,
-                truncate_conversation(conversations[conv_id])
+                instrumented_classify,
+                truncate_conversation(conversations[conv_id]),
+                conv_types[conv_id],
+                classify_with_retry
             ): conv_id
             for conv_id, _ in id_type_pairs
         }

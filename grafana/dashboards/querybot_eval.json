@@ -1,0 +1,153 @@
+{
+  "title": "Querybot Eval Pipeline",
+  "uid": "querybot-eval-v1",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Outcome Distribution by Conversation Type",
+      "type": "piechart",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (conversation_type, outcome) (querybot_classifier_outcome_total)",
+          "legendFormat": "{{conversation_type}} / {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Classifier Latency (p50 / p95) by Type",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (conversation_type, le) (rate(querybot_classifier_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{conversation_type}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (conversation_type, le) (rate(querybot_classifier_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{conversation_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Avg Quality Score by Dimension",
+      "type": "bargauge",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "min": 1,
+          "max": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": 1 },
+              { "color": "yellow", "value": 2 },
+              { "color": "green", "value": 2.5 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (dimension) (rate(querybot_quality_score_sum[24h])) / sum by (dimension) (rate(querybot_quality_score_count[24h]))",
+          "legendFormat": "{{dimension}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Error Rate by Type",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (conversation_type, error_type) (rate(querybot_classifier_errors_total[5m]))",
+          "legendFormat": "{{conversation_type}} / {{error_type}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Total Classified (All Time)",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 16, "w": 6, "h": 4 },
+      "targets": [
+        {
+          "expr": "sum(querybot_classifier_outcome_total)",
+          "legendFormat": "Total"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Success Rate (clean + iterative)",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 16, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 0.6 },
+              { "color": "green", "value": 0.75 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(querybot_classifier_outcome_total{outcome=~\"success.*\"}) / sum(querybot_classifier_outcome_total)",
+          "legendFormat": "Success Rate"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "flag_dev_acknowledged Rate (SQL output only)",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 16, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "short" }
+      },
+      "targets": [
+        {
+          "expr": "sum(querybot_flag_dev_acknowledged_total)",
+          "legendFormat": "Dev Acknowledged"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Pipeline Watermark Age",
+      "type": "stat",
+      "gridPos": { "x": 18, "y": 16, "w": 6, "h": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 3600 },
+              { "color": "red", "value": 86400 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "querybot_pipeline_watermark_age_seconds",
+          "legendFormat": "Watermark Age"
+        }
+      ]
+    }
+  ]
+}

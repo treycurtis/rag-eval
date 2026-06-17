@@ -9,7 +9,15 @@ dependencies = [
     "boto3>=1.42.85",
     "dbt-snowflake>=1.11.4",
     "pandas>=3.0.2",
+    "prometheus-client>=0.21.1",
     "python-dotenv>=1.2.2",
     "requests>=2.33.1",
     "snowflake-connector-python>=4.4.0",
+]
+
+[project.optional-dependencies]
+dashboard = [
+    "streamlit>=1.35",
+    "plotly>=5.20",
+    "pyarrow",
 ]

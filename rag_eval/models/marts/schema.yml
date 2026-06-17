@@ -36,6 +36,15 @@ models:
       - name: classified_at
         description: "Timestamp of the most recent classification run. NULL if not classified."
 
+      - name: prompt_version
+        description: "Fingerprint of the classifier (prompt + model) that produced the winning row. Hash-derived in the Python classifiers; a new value means the scoring function changed. NULL if not classified."
+
+      - name: model_version
+        description: "Anthropic model used as judge for the winning row (e.g. claude-sonnet-4-6). NULL if not classified."
+
+      - name: prompt_hash
+        description: "Short SHA-256 of (model + prompt text) for the winning row. Embedded in prompt_version. NULL if not classified."
+
       - name: question_understanding
         description: "Rubric score 1-3. NULL if not classified."
 
@@ -149,3 +158,80 @@ models:
 
       - name: learning_extracted
         description: "Whether the learning extraction pipeline has processed this conversation."
+
+  - name: dim_classifier_version
+    description: >
+      Warehouse-native registry of LLM-as-judge classifier versions. One row per
+      distinct (prompt_version, model, prompt_hash) observed in the raw classifier
+      ledger. A new row indicates the scoring function changed (prompt or model).
+      Use to audit which judge produced a set of scores and when each version ran.
+    columns:
+      - name: prompt_version
+        description: "Classifier fingerprint (hash of model + prompt text). Primary key with model_version and prompt_hash."
+        tests:
+          - not_null
+      - name: model_version
+        description: "Anthropic model used as judge (e.g. claude-sonnet-4-6)."
+      - name: prompt_hash
+        description: "Short SHA-256 of (model + prompt text). Embedded in prompt_version."
+      - name: first_conversation_type
+        description: "First conversation_type seen for this version (consultation vs generation/modification)."
+      - name: distinct_conversation_types
+        description: "Number of distinct conversation_type values scored under this version."
+      - name: first_classified_at
+        description: "Earliest classification timestamp for this version."
+      - name: last_classified_at
+        description: "Most recent classification timestamp for this version."
+      - name: total_classifications
+        description: "Total classification rows written under this version (includes patch reruns)."
+      - name: distinct_conversations
+        description: "Distinct conversations scored under this version."
+      - name: error_count
+        description: "Number of failed classification rows (error IS NOT NULL) under this version."
+
+  - name: fct_conversation_outcomes_history
+    description: >
+      One row per (conversation_id, prompt_version) — the cross-version companion
+      to fct_conversation_outcomes. Keeps every classifier version's score for a
+      conversation so outcome drift and rubric-score shifts can be compared across
+      prompt/model versions. Within a version, the most recent run is kept.
+    columns:
+      - name: conversation_version_key
+        description: "Surrogate key: MD5(conversation_id || '-' || prompt_version). Primary key."
+        tests:
+          - unique
+          - not_null
+      - name: conversation_id
+        description: "Foreign key to STG_CONVERSATIONS. Not unique on its own — repeats per version."
+        tests:
+          - not_null
+      - name: prompt_version
+        description: "Classifier version that produced this score row."
+        tests:
+          - not_null
+      - name: model_version
+        description: "Anthropic model used as judge for this version."
+      - name: prompt_hash
+        description: "Short SHA-256 of (model + prompt text) for this version."
+      - name: classified_as_type
+        description: "conversation_type at time of classification."
+      - name: classified_at
+        description: "Timestamp of the kept run for this (conversation, version)."
+      - name: outcome
+        description: "Classifier outcome label for this version."
+      - name: question_understanding
+        description: "Rubric score 1-3. NULL for inconclusive outcomes."
+      - name: resource_exhaustion
+        description: "Rubric score 1-3. NULL for inconclusive outcomes."
+      - name: answer_grounding
+        description: "Rubric score 1-3. NULL for inconclusive outcomes."
+      - name: actionability
+        description: "Rubric score 1-3. NULL for inconclusive outcomes."
+      - name: flag_dev_acknowledged
+        description: "SQL output only. NULL for consultation, diagnostic, and inconclusive rows."
+      - name: reasoning
+        description: "Classifier explanation. NULL for inconclusive outcomes."
+      - name: char_count
+        description: "Character count of conversation content fed to the classifier."
+      - name: error
+        description: "Error message if this classification run failed. NULL on success."
